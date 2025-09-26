@@ -1,0 +1,72 @@
+from contextlib import asynccontextmanager
+import uvicorn
+
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi import FastAPI
+
+from app.utils.config import Settings
+from app.routers import assessment
+from app.middleware.rate_limiter import RateLimitMiddleware
+
+# Load settings
+settings = Settings()
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """
+    Application lifespan events.
+    """
+    # Startup
+    print("🚀 Diagrammatic API starting up...")
+    yield
+    # Shutdown
+    print("👋 Diagrammatic API shutting down...")
+
+app = FastAPI(
+    title="Diagrammatic API",
+    description="AI-powered assessment service for system design solutions",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Middleware
+app.add_middleware(
+    RateLimitMiddleware,
+    requests_per_minute=settings.rate_limit_per_minute
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=settings.trusted_hosts
+)
+
+# Include routers
+app.include_router(assessment.router, prefix="/api/v1", tags=["assessment"])
+
+@app.get("/")
+async def root():
+    """Root endpoint providing basic info about the API."""
+    return {
+        "message": "System Design Assessor API",
+        "version": "1.0.0",
+        "docs": "/docs"
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
