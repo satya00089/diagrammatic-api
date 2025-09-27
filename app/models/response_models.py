@@ -22,6 +22,8 @@ class FeedbackCategory(str, Enum):
     COST = "cost"
     REQUIREMENTS = "requirements"
     CONSTRAINTS = "constraints"
+    COMPONENT_DESCRIPTION = "component_description"
+    CONNECTION_REASONING = "connection_reasoning"
 
 class ValidationFeedback(BaseModel):
     """Model for validation feedback."""
@@ -40,6 +42,8 @@ class ScoreBreakdown(BaseModel):
     cost_efficiency: Optional[int] = Field(default=None, ge=0, le=100)
     requirements_alignment: Optional[int] = Field(default=None, ge=0, le=100)
     constraint_compliance: Optional[int] = Field(default=None, ge=0, le=100)
+    component_justification: Optional[int] = Field(default=None, ge=0, le=100)
+    connection_clarity: Optional[int] = Field(default=None, ge=0, le=100)
 
 class AssessmentResponse(BaseModel):
     """Model for system design assessment response."""
@@ -50,6 +54,8 @@ class AssessmentResponse(BaseModel):
     strengths: List[str]
     improvements: List[str]
     missing_components: List[str]
+    missing_descriptions: Optional[List[str]] = None
+    unclear_connections: Optional[List[str]] = None
     suggestions: List[str]
     assessment_id: Optional[str] = None
     processing_time_ms: Optional[int] = None

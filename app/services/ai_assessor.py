@@ -37,7 +37,7 @@ class AIAssessorService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a senior system architect and technical lead with 15+ years of experience in distributed systems, microservices, and cloud architecture. Provide detailed, actionable feedback on system designs.",
+                        "content": "You are a strict senior system architect and technical lead with 15+ years of experience in distributed systems, microservices, and cloud architecture. You have high standards and provide tough but fair assessments. Be critical of incomplete designs, missing descriptions, and poor architectural justification. Only award high scores (70+) when designs demonstrate clear understanding and proper documentation. Penalize missing component descriptions heavily.",
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -76,11 +76,15 @@ class AIAssessorService:
             scores.maintainability,
         ]
 
-        # Add optional scores if they exist
+        # Add optional scores if they exist and weight them appropriately
         if scores.requirements_alignment is not None:
             core_scores.append(scores.requirements_alignment)
         if scores.constraint_compliance is not None:
             core_scores.append(scores.constraint_compliance)
+        if scores.component_justification is not None:
+            core_scores.append(scores.component_justification)
+        if scores.connection_clarity is not None:
+            core_scores.append(scores.connection_clarity)
 
         overall_score = sum(core_scores) // len(core_scores)
 
@@ -92,6 +96,8 @@ class AIAssessorService:
             strengths=ai_result.get("strengths", []),
             improvements=ai_result.get("improvements", []),
             missing_components=ai_result.get("missing_components", []),
+            missing_descriptions=ai_result.get("missing_descriptions", []),
+            unclear_connections=ai_result.get("unclear_connections", []),
             suggestions=ai_result.get("suggestions", []),
         )
 
@@ -102,12 +108,25 @@ class AIAssessorService:
         component_count = len(request.components)
         has_database = any(c.type == "database" for c in request.components)
         has_load_balancer = any(c.type == "load-balancer" for c in request.components)
+        
+        # Check for component descriptions
+        components_with_descriptions = sum(
+            1 for c in request.components 
+            if c.properties and c.properties.get('description', '').strip()
+        )
+        description_score = min(components_with_descriptions * 20, 80)
 
         base_score = min(component_count * 15, 60)
         if has_database:
             base_score += 10
         if has_load_balancer:
             base_score += 15
+
+        # Create list of components missing descriptions
+        missing_descriptions = [
+            c.label for c in request.components 
+            if not (c.properties and c.properties.get('description', '').strip())
+        ]
 
         return AssessmentResponse(
             is_valid=base_score >= 50,
@@ -117,6 +136,8 @@ class AIAssessorService:
                 reliability=base_score,
                 security=max(base_score - 20, 20),
                 maintainability=base_score,
+                component_justification=description_score,
+                connection_clarity=50 if request.connections else 20,
             ),
             feedback=[
                 ValidationFeedback(
@@ -126,7 +147,9 @@ class AIAssessorService:
                 )
             ],
             strengths=["Basic architecture components present"],
-            improvements=["Add detailed component documentation"],
+            improvements=["Add detailed component documentation and connection reasoning"],
             missing_components=[],
-            suggestions=["Consider adding monitoring and caching layers"],
+            missing_descriptions=missing_descriptions,
+            unclear_connections=[] if request.connections else ["No connections defined"],
+            suggestions=["Consider adding monitoring and caching layers", "Provide detailed component descriptions"],
         )
