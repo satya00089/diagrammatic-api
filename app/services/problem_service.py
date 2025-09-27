@@ -16,6 +16,7 @@ class ProblemService:
 
     def __init__(self):
         self.settings = get_settings()
+        print(f"ProblemService initialized with settings: {self.settings}")
         self.client: Optional[AsyncIOMotorClient] = None
         self.db = None
         self.collection = None
@@ -26,12 +27,20 @@ class ProblemService:
             self.client = AsyncIOMotorClient(self.settings.mongodb_uri)
             self.db = self.client[self.settings.mongo_dbname]
             self.collection = self.db[self.settings.mongo_collname]
-
             # Test the connection
             await self.client.admin.command("ping")
             logger.info("Successfully connected to MongoDB")
         except Exception as e:
             logger.error("Failed to connect to MongoDB: %s", e)
+            # Ensure we drop half-open client
+            if self.client:
+                try:
+                    self.client.close()
+                except Exception:
+                    pass
+                self.client = None
+            self.db = None
+            self.collection = None
             raise
 
     def disconnect(self):
@@ -39,11 +48,35 @@ class ProblemService:
         if self.client:
             self.client.close()
             logger.info("Disconnected from MongoDB")
+        self.client = None
+        self.db = None
+        self.collection = None
+
+    async def ensure_connected(self):
+        """Ensure there is a healthy connection; recreate if loop changed or closed.
+
+        Handles serverless environments where the event loop may be recycled and the
+        underlying Motor client becomes bound to a closed loop, triggering
+        'Event loop is closed' errors on use.
+        """
+        if self.client is None:
+            await self.connect()
+            return
+        try:
+            await self.client.admin.command("ping")
+        except Exception as e:
+            # Any issue -> rebuild client
+            warn_msg = f"Reinitializing MongoDB client after ping failure: {e}"  # noqa: E501
+            logger.warning(warn_msg)
+            self.disconnect()
+            await self.connect()
 
     async def get_all_problems(self) -> List[ProblemSummary]:
         """Get all problems with summary information."""
         try:
+            await self.ensure_connected()
             # Project only the fields needed for summary
+            print(f"ProblemService initialized with settings: {self.settings}")
             projection = {
                 "_id": 0,
                 "id": 1,
@@ -56,7 +89,7 @@ class ProblemService:
                 "tags": 1,
                 "companies": 1,
             }
-
+            print(f'connection: {self.client}, db: {self.db}, collection: {self.collection}')
             cursor = self.collection.find({}, projection)
             problems = []
 
@@ -77,6 +110,7 @@ class ProblemService:
     async def get_problem_by_id(self, problem_id: str) -> Optional[ProblemDetail]:
         """Get a specific problem by ID with full details."""
         try:
+            await self.ensure_connected()
             doc = await self.collection.find_one(
                 {"id": problem_id}, {"_id": 0}  # Exclude MongoDB _id field
             )
@@ -97,14 +131,14 @@ class ProblemService:
     async def health_check(self) -> bool:
         """Check if database connection is healthy."""
         try:
-            await self.client.admin.command("ping")
+            await self.ensure_connected()
             return True
         except PyMongoError as e:
             logger.error("Database health check failed: %s", e)
             return False
 
 
-# Global instance
+# Global instance (lazy-initialized)
 problem_service = ProblemService()
 
 

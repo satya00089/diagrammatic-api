@@ -23,16 +23,19 @@ async def lifespan(_app: FastAPI):
     # Startup
     print("🚀 Diagrammatic API starting up...")
     try:
-        await problem_service.connect()
-        print("✅ MongoDB connected successfully")
+        await problem_service.ensure_connected()
+        print("✅ MongoDB connected successfully (lifespan)")
     except Exception as e:
-        print(f"❌ Failed to connect to MongoDB: {e}")
+        print(f"❌ Failed to connect to MongoDB at startup: {e}")
 
     yield
 
-    # Shutdown
+    # Shutdown (might not run on some serverless platforms)
     print("👋 Diagrammatic API shutting down...")
-    await problem_service.disconnect()
+    try:
+        problem_service.disconnect()
+    except Exception as e:
+        print(f"⚠️ Error during disconnect: {e}")
 
 
 app = FastAPI(
@@ -77,4 +80,5 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy"}
+    healthy = await problem_service.health_check()
+    return {"status": "healthy" if healthy else "degraded"}
