@@ -27,6 +27,11 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     rate_limit_per_minute: int = 30
+    
+    # MongoDB Configuration
+    mongodb_uri: str
+    mongo_dbname: str = "diagrammatic"
+    mongo_collname: str = "problems"
 
     class Config:
         """Pydantic configuration to load from .env file."""

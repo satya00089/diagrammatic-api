@@ -1,3 +1,5 @@
+"""Router for system design assessment endpoints."""
+
 import uuid
 
 from fastapi import APIRouter, HTTPException, Depends
