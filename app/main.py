@@ -1,5 +1,6 @@
+"""Main application file for the Diagrammatic API service."""
+
 from contextlib import asynccontextmanager
-import uvicorn
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -77,7 +78,3 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
