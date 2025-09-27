@@ -2,39 +2,53 @@
 
 from functools import lru_cache
 from pydantic_settings import BaseSettings
-
+from pydantic import Field, ValidationError
 
 
 class Settings(BaseSettings):
     """Application configuration settings."""
 
     # OpenAI Configuration
-    openai_api_key: str
-    openai_model: str = "gpt-4o-mini"
-    openai_max_tokens: int = 2000
-    openai_temperature: float = 0.3
+    openai_api_key: str = Field(..., env="OPENAI_API_KEY")
+    openai_model: str = Field("gpt-4o-mini", env="OPENAI_MODEL")
+    openai_max_tokens: int = Field(2000, env="OPENAI_MAX_TOKENS")
+    openai_temperature: float = Field(0.3, env="OPENAI_TEMPERATURE")
 
     # API Configuration
-    api_host: str = "0.0.0.0"
-    api_port: int = 8000
-    debug: bool = False
+    api_host: str = Field("0.0.0.0", env="API_HOST")
+    api_port: int = Field(8000, env="API_PORT")
+    debug: bool = Field(False, env="DEBUG")
 
     # CORS Configuration
-    allowed_origins: list[str] = ["*"]
+    allowed_origins: list[str] = Field(
+        ["*"],
+        env="ALLOWED_ORIGINS",
+    )
 
     # Trusted Hosts Configuration
-    trusted_hosts: list[str] = ["localhost", "127.0.0.1", "0.0.0.0"]
+    trusted_hosts: list[str] = Field(["*"], env="TRUSTED_HOSTS")
 
     # Rate Limiting
-    rate_limit_per_minute: int = 30
+    rate_limit_per_minute: int = Field(30, env="RATE_LIMIT_PER_MINUTE")
+
+    # MongoDB Configuration
+    mongodb_uri: str = Field(..., env="MONGODB_URI")
+    mongo_dbname: str = Field("diagrammatic", env="MONGO_DBNAME")
+    mongo_collname: str = Field("problems", env="MONGO_COLLNAME")
 
     class Config:
         """Pydantic configuration to load from .env file."""
+
         env_file = ".env"
         case_sensitive = False
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get the application settings, loading them if necessary."""
-    return Settings()
+    """Get cached settings instance."""
+    try:
+        s = Settings()
+    except ValidationError as e:
+        # Raise a helpful message in logs for missing required envs
+        raise RuntimeError(f"Configuration error: {e}") from e
+    return s
