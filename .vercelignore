@@ -1,0 +1,6 @@
+scripts/
+tests/
+docs/
+*.md
+.env
+.env.example
