@@ -36,6 +36,23 @@ class Settings(BaseSettings):
     mongo_dbname: str = Field("diagrammatic", env="MONGO_DBNAME")
     mongo_collname: str = Field("problems", env="MONGO_COLLNAME")
 
+    # JWT Configuration
+    jwt_secret_key: str = Field(..., env="JWT_SECRET_KEY")
+    jwt_algorithm: str = Field("HS256", env="JWT_ALGORITHM")
+    jwt_access_token_expire_hours: int = Field(24, env="JWT_ACCESS_TOKEN_EXPIRE_HOURS")
+
+    # Google OAuth Configuration
+    google_client_id: str = Field(..., env="GOOGLE_CLIENT_ID")
+
+    # AWS DynamoDB Configuration
+    aws_region: str = Field("us-east-1", env="AWS_REGION")
+    aws_access_key_id: str = Field(..., env="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str = Field(..., env="AWS_SECRET_ACCESS_KEY")
+    dynamodb_users_table: str = Field("diagrammatic_users", env="DYNAMODB_USERS_TABLE")
+    dynamodb_diagrams_table: str = Field(
+        "diagrammatic_diagrams", env="DYNAMODB_DIAGRAMS_TABLE"
+    )
+
     class Config:
         """Pydantic configuration to load from .env file."""
 
