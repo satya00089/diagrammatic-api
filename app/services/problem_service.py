@@ -1,9 +1,9 @@
 """MongoDB database service for problems collection."""
 
-from typing import List, Optional
+from typing import Any, List, Optional
 import logging
 
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
 from pymongo.errors import PyMongoError
 from app.utils.config import get_settings
 from app.models.problem_models import ProblemSummary, ProblemDetail
@@ -16,10 +16,9 @@ class ProblemService:
 
     def __init__(self):
         self.settings = get_settings()
-        print(f"ProblemService initialized with settings: {self.settings}")
-        self.client: Optional[AsyncIOMotorClient] = None
-        self.db = None
-        self.collection = None
+        self.client: Optional[AsyncIOMotorClient[Any]] = None
+        self.db: Optional[AsyncIOMotorDatabase[Any]] = None
+        self.collection: Optional[AsyncIOMotorCollection[Any]] = None
 
     async def connect(self):
         """Connect to MongoDB."""
@@ -76,7 +75,6 @@ class ProblemService:
         try:
             await self.ensure_connected()
             # Project only the fields needed for summary
-            print(f"ProblemService initialized with settings: {self.settings}")
             projection = {
                 "_id": 0,
                 "id": 1,
@@ -90,8 +88,12 @@ class ProblemService:
                 "companies": 1,
             }
             print(f'connection: {self.client}, db: {self.db}, collection: {self.collection}')
+            
+            if self.collection is None:
+                raise RuntimeError("Collection not initialized")
+            
             cursor = self.collection.find({}, projection)
-            problems = []
+            problems: List[ProblemSummary] = []
 
             async for doc in cursor:
                 # Handle both estimated_time and estimatedTime field names
@@ -100,7 +102,7 @@ class ProblemService:
                 elif "estimatedTime" not in doc and "estimated_time" in doc:
                     doc["estimatedTime"] = doc["estimated_time"]
 
-                problems.append(ProblemSummary(**doc))
+                problems.append(ProblemSummary(**doc))  # type: ignore[arg-type]
 
             return problems
         except Exception as e:
@@ -111,6 +113,10 @@ class ProblemService:
         """Get a specific problem by ID with full details."""
         try:
             await self.ensure_connected()
+            
+            if self.collection is None:
+                raise RuntimeError("Collection not initialized")
+            
             doc = await self.collection.find_one(
                 {"id": problem_id}, {"_id": 0}  # Exclude MongoDB _id field
             )
@@ -122,7 +128,7 @@ class ProblemService:
                 elif "estimatedTime" not in doc and "estimated_time" in doc:
                     doc["estimatedTime"] = doc["estimated_time"]
 
-                return ProblemDetail(**doc)
+                return ProblemDetail(**doc)  # type: ignore[arg-type]
             return None
         except Exception as e:
             logger.error("Error fetching problem %s: %s", problem_id, e)
