@@ -67,7 +67,7 @@ class AuthService:
         Verify Google OAuth credential and extract user info.
         
         Returns:
-            dict with keys: email, name, google_id
+            dict with keys: email, name, picture, google_id
         """
         try:
             idinfo = id_token.verify_oauth2_token(  # type: ignore
@@ -84,6 +84,7 @@ class AuthService:
             return {
                 "email": idinfo["email"],
                 "name": idinfo.get("name", ""),
+                "picture": idinfo.get("picture", ""),
                 "google_id": idinfo["sub"],
             }
         except ValueError as e:

@@ -60,7 +60,7 @@ async def signup(request: SignupRequest):
 
     return AuthResponse(
         user=UserResponse(
-            id=user.id, email=user.email, name=user.name, createdAt=user.createdAt
+            id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
         ),
         token=token,
     )
@@ -93,7 +93,7 @@ async def login(request: LoginRequest):
 
     return AuthResponse(
         user=UserResponse(
-            id=user.id, email=user.email, name=user.name, createdAt=user.createdAt
+            id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
         ),
         token=token,
     )
@@ -114,7 +114,9 @@ async def google_auth(request: GoogleAuthRequest):
 
         if user and not user.googleId:
             # User exists by email but no Google ID - update the existing user
-            updated_user = dynamodb_service.update_user_google_id(user.id, google_info["google_id"])
+            updated_user = dynamodb_service.update_user_google_id(
+                user.id, google_info["google_id"], google_info.get("picture")
+            )
             if updated_user:
                 user = updated_user
         elif not user:
@@ -122,6 +124,7 @@ async def google_auth(request: GoogleAuthRequest):
             user = dynamodb_service.create_user(
                 email=google_info["email"],
                 name=google_info["name"],
+                picture=google_info.get("picture"),
                 google_id=google_info["google_id"],
             )
 
@@ -138,7 +141,7 @@ async def google_auth(request: GoogleAuthRequest):
 
     return AuthResponse(
         user=UserResponse(
-            id=user.id, email=user.email, name=user.name, createdAt=user.createdAt
+            id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
         ),
         token=token,
     )
@@ -154,5 +157,5 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
         )
 
     return UserResponse(
-        id=user.id, email=user.email, name=user.name, createdAt=user.createdAt
+        id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
     )
