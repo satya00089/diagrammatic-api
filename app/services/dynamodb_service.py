@@ -67,9 +67,21 @@ class DynamoDBService:
         email: str,
         password_hash: Optional[str] = None,
         name: Optional[str] = None,
+        picture: Optional[str] = None,
         google_id: Optional[str] = None,
     ) -> User:
         """Create a new user in DynamoDB."""
+        # First check if user already exists to prevent duplicates
+        existing_user = self.get_user_by_email(email)
+        if existing_user:
+            # If creating with Google ID and existing user doesn't have it, update
+            if google_id and not existing_user.googleId:
+                updated_user = self.update_user_google_id(existing_user.id, google_id, picture)
+                if updated_user:
+                    return updated_user
+            # Otherwise return existing user
+            return existing_user
+        
         user_id = str(uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
@@ -83,10 +95,25 @@ class DynamoDBService:
 
         if password_hash:
             item["passwordHash"] = password_hash
+        if picture:
+            item["picture"] = picture
         if google_id:
             item["googleId"] = google_id
 
-        self.users_table.put_item(Item=item)
+        try:
+            # Use ConditionExpression to prevent creating if ID already exists
+            self.users_table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(id)"
+            )
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code')  # type: ignore[union-attr]
+            if error_code == 'ConditionalCheckFailedException':
+                # User was created by another request, fetch and return it
+                existing_user = self.get_user_by_email(email)
+                if existing_user:
+                    return existing_user
+            raise
 
         return User(**item)
 
@@ -131,17 +158,26 @@ class DynamoDBService:
         except ClientError:
             return None
 
-    def update_user_google_id(self, user_id: str, google_id: str) -> Optional[User]:
-        """Update user's Google ID (for linking Google account to existing user)."""
+    def update_user_google_id(self, user_id: str, google_id: str, picture: Optional[str] = None) -> Optional[User]:
+        """Update user's Google ID and picture (for linking Google account to existing user)."""
         try:
             now = datetime.now(timezone.utc).isoformat()
+            
+            update_expression = "SET googleId = :google_id, updatedAt = :updated"
+            expression_values: Dict[str, Any] = {
+                ":google_id": google_id,
+                ":updated": now,
+            }
+            
+            # Add picture to update if provided
+            if picture:
+                update_expression += ", picture = :picture"
+                expression_values[":picture"] = picture
+            
             response = self.users_table.update_item(
                 Key={"id": user_id},
-                UpdateExpression="SET googleId = :google_id, updatedAt = :updated",
-                ExpressionAttributeValues={
-                    ":google_id": google_id,
-                    ":updated": now,
-                },
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expression_values,
                 ReturnValues="ALL_NEW",
             )
             item = response.get("Attributes")

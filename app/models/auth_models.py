@@ -31,6 +31,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     name: Optional[str] = None
+    picture: Optional[str] = None
     createdAt: str
 
     class Config:
@@ -53,6 +54,7 @@ class User(BaseModel):
     email: str
     passwordHash: Optional[str] = None  # Optional for Google users
     name: Optional[str] = None
+    picture: Optional[str] = None
     googleId: Optional[str] = None
     createdAt: str
     updatedAt: str
