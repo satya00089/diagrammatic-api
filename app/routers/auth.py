@@ -112,13 +112,24 @@ async def google_auth(request: GoogleAuthRequest):
         # Check if user exists by email
         user = dynamodb_service.get_user_by_email(google_info["email"])
 
-        if not user:
+        if user:
+            # User exists by email but no Google ID - update the existing user
+            updated_user = dynamodb_service.update_user_google_id(user.id, google_info["google_id"])
+            if updated_user:
+                user = updated_user
+        else:
             # Create new user (auto-registration)
             user = dynamodb_service.create_user(
                 email=google_info["email"],
                 name=google_info["name"],
                 google_id=google_info["google_id"],
             )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create or retrieve user",
+        )
 
     # Create JWT token
     token = auth_service.create_access_token(

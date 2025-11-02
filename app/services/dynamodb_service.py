@@ -131,6 +131,28 @@ class DynamoDBService:
         except ClientError:
             return None
 
+    def update_user_google_id(self, user_id: str, google_id: str) -> Optional[User]:
+        """Update user's Google ID (for linking Google account to existing user)."""
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            response = self.users_table.update_item(
+                Key={"id": user_id},
+                UpdateExpression="SET googleId = :google_id, updatedAt = :updated",
+                ExpressionAttributeValues={
+                    ":google_id": google_id,
+                    ":updated": now,
+                },
+                ReturnValues="ALL_NEW",
+            )
+            item = response.get("Attributes")
+            if item:
+                user_data: Dict[str, Any] = item
+                return User(**user_data)
+            return None
+        except ClientError as e:
+            print(f"Error updating user Google ID: {e}")
+            return None
+
     # Diagram operations
     def create_diagram(
         self,
@@ -159,9 +181,7 @@ class DynamoDBService:
             "updatedAt": now,
         }
 
-        print(f"Creating diagram with ID: {diagram_id}, userId: {user_id}, title: {title}")
         self.diagrams_table.put_item(Item=item)
-        print(f"Diagram created successfully")
 
         # Return with original float values for response
         return Diagram(
@@ -184,7 +204,6 @@ class DynamoDBService:
                 KeyConditionExpression=Key("userId").eq(user_id)
             )
             response_items = response.get("Items", [])
-            print(f"Query for userId={user_id}: Found {len(response_items)} items in first page")
             items.extend(response_items)
             
             # Continue fetching if there are more pages
@@ -194,12 +213,7 @@ class DynamoDBService:
                     ExclusiveStartKey=response["LastEvaluatedKey"]
                 )
                 response_items = response.get("Items", [])
-                print(f"Fetched {len(response_items)} more items from next page")
                 items.extend(response_items)
-            
-            print(f"Total items retrieved: {len(items)}")
-            for item in items:
-                print(f"  - Diagram ID: {item.get('id')}, Title: {item.get('title')}")
             
             # Convert Decimal back to float for JSON serialization
             items_float = [convert_decimal_to_float(item) for item in items]
