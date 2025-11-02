@@ -112,13 +112,13 @@ async def google_auth(request: GoogleAuthRequest):
         # Check if user exists by email
         user = dynamodb_service.get_user_by_email(google_info["email"])
 
-        if user:
+        if user and not user.googleId:
             # User exists by email but no Google ID - update the existing user
             updated_user = dynamodb_service.update_user_google_id(user.id, google_info["google_id"])
             if updated_user:
                 user = updated_user
-        else:
-            # Create new user (auto-registration)
+        elif not user:
+            # Create new user (create_user now handles duplicate prevention)
             user = dynamodb_service.create_user(
                 email=google_info["email"],
                 name=google_info["name"],

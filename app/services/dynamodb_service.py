@@ -70,6 +70,17 @@ class DynamoDBService:
         google_id: Optional[str] = None,
     ) -> User:
         """Create a new user in DynamoDB."""
+        # First check if user already exists to prevent duplicates
+        existing_user = self.get_user_by_email(email)
+        if existing_user:
+            # If creating with Google ID and existing user doesn't have it, update
+            if google_id and not existing_user.googleId:
+                updated_user = self.update_user_google_id(existing_user.id, google_id)
+                if updated_user:
+                    return updated_user
+            # Otherwise return existing user
+            return existing_user
+        
         user_id = str(uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
@@ -86,7 +97,20 @@ class DynamoDBService:
         if google_id:
             item["googleId"] = google_id
 
-        self.users_table.put_item(Item=item)
+        try:
+            # Use ConditionExpression to prevent creating if ID already exists
+            self.users_table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(id)"
+            )
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code')  # type: ignore[union-attr]
+            if error_code == 'ConditionalCheckFailedException':
+                # User was created by another request, fetch and return it
+                existing_user = self.get_user_by_email(email)
+                if existing_user:
+                    return existing_user
+            raise
 
         return User(**item)
 
