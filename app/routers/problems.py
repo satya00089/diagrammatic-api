@@ -1,11 +1,11 @@
 """API router for problem-related endpoints."""
 
 import logging
-from typing import List
+from typing import List, Optional, Dict, Union
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, status, Query
 from app.models.problem_models import ProblemSummary, ProblemDetail
-from app.services.problem_service import get_problem_service, ProblemService
+from app.services.dynamodb_service import dynamodb_service
 
 
 logger = logging.getLogger(__name__)
@@ -14,18 +14,33 @@ router = APIRouter()
 
 @router.get("/all-problems", response_model=List[ProblemSummary])
 async def get_all_problems(
-    problem_service: ProblemService = Depends(get_problem_service),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    difficulty: Optional[str] = Query(None, description="Filter by difficulty (easy/medium/hard)"),
 ) -> List[ProblemSummary]:
     """
     Get all problems with summary information.
+    
+    Query Parameters:
+        category: Optional filter by category (e.g., 'graphs', 'trees', 'arrays')
+        difficulty: Optional filter by difficulty ('easy', 'medium', 'hard')
 
     Returns:
         List of problems with id, title, description, difficulty, category,
         estimatedTime, tags, and companies.
     """
     try:
-        problems = await problem_service.get_all_problems()
-        return problems
+        # Filter by category if provided
+        if category:
+            problems = dynamodb_service.get_problems_by_category(category)
+        # Filter by difficulty if provided
+        elif difficulty:
+            problems = dynamodb_service.get_problems_by_difficulty(difficulty)
+        # Get all problems if no filters
+        else:
+            problems = dynamodb_service.get_all_problems()
+        
+        # Convert DynamoDB items to ProblemSummary models
+        return [ProblemSummary(**problem) for problem in problems]
     except Exception as e:
         logger.error("Error in get_all_problems: %s", e)
         raise HTTPException(
@@ -36,7 +51,7 @@ async def get_all_problems(
 
 @router.get("/problem/{problem_id}", response_model=ProblemDetail)
 async def get_problem_by_id(
-    problem_id: str, problem_service: ProblemService = Depends(get_problem_service)
+    problem_id: str
 ) -> ProblemDetail:
     """
     Get a specific problem by ID with full details.
@@ -48,7 +63,7 @@ async def get_problem_by_id(
         Complete problem details including requirements, constraints, and hints.
     """
     try:
-        problem = await problem_service.get_problem_by_id(problem_id)
+        problem = dynamodb_service.get_problem_by_id(problem_id)
 
         if not problem:
             raise HTTPException(
@@ -56,7 +71,7 @@ async def get_problem_by_id(
                 detail=f"Problem with ID '{problem_id}' not found",
             )
 
-        return problem
+        return ProblemDetail(**problem)
     except HTTPException:
         raise
     except Exception as e:
@@ -68,20 +83,19 @@ async def get_problem_by_id(
 
 
 @router.get("/problems/health")
-async def problems_health_check(
-    problem_service: ProblemService = Depends(get_problem_service),
-):
+async def problems_health_check() -> Dict[str, Union[str, int]]:
     """Health check for problems service and database connection."""
     try:
-        is_healthy = await problem_service.health_check()
-
-        if is_healthy:
-            return {"status": "healthy", "service": "problems", "database": "connected"}
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Database connection is not healthy",
-            )
+        # Try to query a single item to check if DynamoDB is accessible
+        problems = dynamodb_service.get_all_problems()
+        
+        return {
+            "status": "healthy",
+            "service": "problems",
+            "database": "dynamodb",
+            "connection": "connected",
+            "problem_count": len(problems) if problems else 0
+        }
     except Exception as e:
         logger.error("Error in problems health check: %s", e)
         raise HTTPException(
