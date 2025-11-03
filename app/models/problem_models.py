@@ -1,4 +1,4 @@
-"""Models for problem data from MongoDB."""
+"""Models for problem data from DynamoDB."""
 
 from typing import List, Optional
 from datetime import datetime

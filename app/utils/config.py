@@ -31,11 +31,6 @@ class Settings(BaseSettings):
     # Rate Limiting
     rate_limit_per_minute: int = Field(30, validation_alias="RATE_LIMIT_PER_MINUTE")
 
-    # MongoDB Configuration
-    mongodb_uri: str = Field(..., validation_alias="MONGODB_URI")
-    mongo_dbname: str = Field("diagrammatic", validation_alias="MONGO_DBNAME")
-    mongo_collname: str = Field("problems", validation_alias="MONGO_COLLNAME")
-
     # JWT Configuration
     jwt_secret_key: str = Field(..., validation_alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field("HS256", validation_alias="JWT_ALGORITHM")
