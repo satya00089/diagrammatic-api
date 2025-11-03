@@ -60,6 +60,7 @@ class DynamoDBService:
         )
         self.users_table: Table = dynamodb.Table(settings.dynamodb_users_table)
         self.diagrams_table: Table = dynamodb.Table(settings.dynamodb_diagrams_table)
+        self.problems_table: Table = dynamodb.Table(settings.dynamodb_problems_table)
 
     # User operations
     def create_user(
@@ -338,6 +339,79 @@ class DynamoDBService:
             return True
         except ClientError:
             return False
+
+    # Problem operations
+    def get_all_problems(self) -> List[Dict[str, Any]]:
+        """Get all problems from DynamoDB."""
+        try:
+            items: List[Dict[str, Any]] = []
+            response = self.problems_table.scan()
+            items.extend(response.get("Items", []))
+            
+            # Handle pagination
+            while "LastEvaluatedKey" in response:
+                response = self.problems_table.scan(
+                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                )
+                items.extend(response.get("Items", []))
+            
+            return items
+        except ClientError:
+            return []
+
+    def get_problem_by_id(self, problem_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific problem by ID."""
+        try:
+            response = self.problems_table.get_item(Key={"id": problem_id})
+            return response.get("Item")
+        except ClientError:
+            return None
+
+    def get_problems_by_category(self, category: str) -> List[Dict[str, Any]]:
+        """Get problems by category using GSI."""
+        try:
+            items: List[Dict[str, Any]] = []
+            response = self.problems_table.query(
+                IndexName="category-index",
+                KeyConditionExpression=Key("category").eq(category)
+            )
+            items.extend(response.get("Items", []))
+            
+            # Handle pagination
+            while "LastEvaluatedKey" in response:
+                response = self.problems_table.query(
+                    IndexName="category-index",
+                    KeyConditionExpression=Key("category").eq(category),
+                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                )
+                items.extend(response.get("Items", []))
+            
+            return items
+        except ClientError:
+            return []
+
+    def get_problems_by_difficulty(self, difficulty: str) -> List[Dict[str, Any]]:
+        """Get problems by difficulty using GSI."""
+        try:
+            items: List[Dict[str, Any]] = []
+            response = self.problems_table.query(
+                IndexName="difficulty-index",
+                KeyConditionExpression=Key("difficulty").eq(difficulty)
+            )
+            items.extend(response.get("Items", []))
+            
+            # Handle pagination
+            while "LastEvaluatedKey" in response:
+                response = self.problems_table.query(
+                    IndexName="difficulty-index",
+                    KeyConditionExpression=Key("difficulty").eq(difficulty),
+                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                )
+                items.extend(response.get("Items", []))
+            
+            return items
+        except ClientError:
+            return []
 
 
 # Global DynamoDB service instance

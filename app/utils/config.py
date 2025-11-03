@@ -9,48 +9,46 @@ class Settings(BaseSettings):
     """Application configuration settings."""
 
     # OpenAI Configuration
-    openai_api_key: str = Field(..., env="OPENAI_API_KEY")
-    openai_model: str = Field("gpt-4o-mini", env="OPENAI_MODEL")
-    openai_max_tokens: int = Field(2000, env="OPENAI_MAX_TOKENS")
-    openai_temperature: float = Field(0.3, env="OPENAI_TEMPERATURE")
+    openai_api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
+    openai_model: str = Field("gpt-4o-mini", validation_alias="OPENAI_MODEL")
+    openai_max_tokens: int = Field(2000, validation_alias="OPENAI_MAX_TOKENS")
+    openai_temperature: float = Field(0.3, validation_alias="OPENAI_TEMPERATURE")
 
     # API Configuration
-    api_host: str = Field("0.0.0.0", env="API_HOST")
-    api_port: int = Field(8000, env="API_PORT")
-    debug: bool = Field(False, env="DEBUG")
+    api_host: str = Field("0.0.0.0", validation_alias="API_HOST")
+    api_port: int = Field(8000, validation_alias="API_PORT")
+    debug: bool = Field(False, validation_alias="DEBUG")
 
     # CORS Configuration
     allowed_origins: list[str] = Field(
         ["*"],
-        env="ALLOWED_ORIGINS",
+        validation_alias="ALLOWED_ORIGINS",
     )
 
     # Trusted Hosts Configuration
-    trusted_hosts: list[str] = Field(["*"], env="TRUSTED_HOSTS")
+    trusted_hosts: list[str] = Field(["*"], validation_alias="TRUSTED_HOSTS")
 
     # Rate Limiting
-    rate_limit_per_minute: int = Field(30, env="RATE_LIMIT_PER_MINUTE")
-
-    # MongoDB Configuration
-    mongodb_uri: str = Field(..., env="MONGODB_URI")
-    mongo_dbname: str = Field("diagrammatic", env="MONGO_DBNAME")
-    mongo_collname: str = Field("problems", env="MONGO_COLLNAME")
+    rate_limit_per_minute: int = Field(30, validation_alias="RATE_LIMIT_PER_MINUTE")
 
     # JWT Configuration
-    jwt_secret_key: str = Field(..., env="JWT_SECRET_KEY")
-    jwt_algorithm: str = Field("HS256", env="JWT_ALGORITHM")
-    jwt_access_token_expire_hours: int = Field(24, env="JWT_ACCESS_TOKEN_EXPIRE_HOURS")
+    jwt_secret_key: str = Field(..., validation_alias="JWT_SECRET_KEY")
+    jwt_algorithm: str = Field("HS256", validation_alias="JWT_ALGORITHM")
+    jwt_access_token_expire_hours: int = Field(24, validation_alias="JWT_ACCESS_TOKEN_EXPIRE_HOURS")
 
     # Google OAuth Configuration
-    google_client_id: str = Field(..., env="GOOGLE_CLIENT_ID")
+    google_client_id: str = Field(..., validation_alias="GOOGLE_CLIENT_ID")
 
     # AWS DynamoDB Configuration
-    aws_region: str = Field("us-east-1", env="AWS_REGION")
-    aws_access_key_id: str = Field(..., env="AWS_ACCESS_KEY_ID")
-    aws_secret_access_key: str = Field(..., env="AWS_SECRET_ACCESS_KEY")
-    dynamodb_users_table: str = Field("diagrammatic_users", env="DYNAMODB_USERS_TABLE")
+    aws_region: str = Field("us-east-1", validation_alias="AWS_REGION")
+    aws_access_key_id: str = Field(..., validation_alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str = Field(..., validation_alias="AWS_SECRET_ACCESS_KEY")
+    dynamodb_users_table: str = Field("diagrammatic_users", validation_alias="DYNAMODB_USERS_TABLE")
     dynamodb_diagrams_table: str = Field(
-        "diagrammatic_diagrams", env="DYNAMODB_DIAGRAMS_TABLE"
+        "diagrammatic_diagrams", validation_alias="DYNAMODB_DIAGRAMS_TABLE"
+    )
+    dynamodb_problems_table: str = Field(
+        "diagrammatic_problems", validation_alias="DYNAMODB_PROBLEMS_TABLE"
     )
 
     class Config:
@@ -64,7 +62,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance."""
     try:
-        s = Settings()
+        s = Settings()  # type: ignore[call-arg]
     except ValidationError as e:
         # Raise a helpful message in logs for missing required envs
         raise RuntimeError(f"Configuration error: {e}") from e

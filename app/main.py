@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from app.utils.config import get_settings
 from app.routers import assessment, problems, auth, diagrams
 from app.middleware.rate_limiter import RateLimitMiddleware
-from app.services.problem_service import problem_service
+from app.services.dynamodb_service import dynamodb_service
 
 # Load settings
 settings = get_settings()
@@ -23,19 +23,16 @@ async def lifespan(_app: FastAPI):
     # Startup
     print("🚀 Diagrammatic API starting up...")
     try:
-        await problem_service.ensure_connected()
-        print("✅ MongoDB connected successfully (lifespan)")
+        # Test DynamoDB connection
+        dynamodb_service.get_all_problems()
+        print("✅ DynamoDB connected successfully (lifespan)")
     except Exception as e:
-        print(f"❌ Failed to connect to MongoDB at startup: {e}")
+        print(f"❌ Failed to connect to DynamoDB at startup: {e}")
 
     yield
 
     # Shutdown (might not run on some serverless platforms)
     print("👋 Diagrammatic API shutting down...")
-    try:
-        problem_service.disconnect()
-    except Exception as e:
-        print(f"⚠️ Error during disconnect: {e}")
 
 
 app = FastAPI(
@@ -82,5 +79,10 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    healthy = await problem_service.health_check()
-    return {"status": "healthy" if healthy else "degraded"}
+    try:
+        # Test DynamoDB connection by fetching problems
+        problems = dynamodb_service.get_all_problems()
+        healthy = problems is not None
+    except Exception:
+        healthy = False
+    return {"status": "healthy" if healthy else "degraded", "database": "dynamodb"}
