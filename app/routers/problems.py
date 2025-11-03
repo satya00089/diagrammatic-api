@@ -15,18 +15,18 @@ router = APIRouter()
 @router.get("/all-problems", response_model=List[ProblemSummary])
 async def get_all_problems(
     category: Optional[str] = Query(None, description="Filter by category"),
-    difficulty: Optional[str] = Query(None, description="Filter by difficulty (easy/medium/hard)"),
+    difficulty: Optional[str] = Query(None, description="Filter by difficulty (easy/medium/hard/very hard)"),
 ) -> List[ProblemSummary]:
     """
-    Get all problems with summary information.
+    Get all problems with summary information, sorted from easy to very hard.
     
     Query Parameters:
         category: Optional filter by category (e.g., 'graphs', 'trees', 'arrays')
-        difficulty: Optional filter by difficulty ('easy', 'medium', 'hard')
+        difficulty: Optional filter by difficulty ('easy', 'medium', 'hard', 'very hard')
 
     Returns:
         List of problems with id, title, description, difficulty, category,
-        estimatedTime, tags, and companies.
+        estimatedTime, tags, and companies. Sorted by difficulty: easy -> medium -> hard -> very hard.
     """
     try:
         # Filter by category if provided
@@ -38,9 +38,15 @@ async def get_all_problems(
         # Get all problems if no filters
         else:
             problems = dynamodb_service.get_all_problems()
-        
+
         # Convert DynamoDB items to ProblemSummary models
-        return [ProblemSummary(**problem) for problem in problems]
+        problem_list = [ProblemSummary(**problem) for problem in problems]
+
+        # Sort by difficulty: easy -> medium -> hard -> very hard
+        difficulty_order = {"easy": 1, "medium": 2, "hard": 3, "very hard": 4}
+        problem_list.sort(key=lambda p: difficulty_order.get(p.difficulty.lower(), 5))
+
+        return problem_list
     except Exception as e:
         logger.error("Error in get_all_problems: %s", e)
         raise HTTPException(
