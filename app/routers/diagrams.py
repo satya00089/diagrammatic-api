@@ -4,8 +4,17 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.models.diagram_models import DiagramCreate, DiagramUpdate, DiagramResponse
+from app.models.diagram_models import (
+    DiagramCreate,
+    DiagramUpdate,
+    DiagramResponse,
+    ShareRequest,
+    ShareResponse,
+    Collaborator,
+    Permission,
+)
 from app.services.dynamodb_service import dynamodb_service
+from app.services.validation import validate_diagram_access, validate_collaborator_limit
 from app.routers.auth import get_current_user
 
 router = APIRouter()
@@ -14,7 +23,9 @@ router = APIRouter()
 DIAGRAM_NOT_FOUND = "Diagram not found"
 
 
-@router.post("/diagrams", response_model=DiagramResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/diagrams", response_model=DiagramResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_diagram(
     request: DiagramCreate, current_user: Dict[str, Any] = Depends(get_current_user)
 ):
@@ -36,6 +47,8 @@ async def create_diagram(
         edges=diagram.edges,
         createdAt=diagram.createdAt,
         updatedAt=diagram.updatedAt,
+        isPublic=diagram.isPublic,
+        collaborators=diagram.collaborators,
     )
 
 
@@ -54,20 +67,39 @@ async def get_diagrams(current_user: Dict[str, Any] = Depends(get_current_user))
             edges=diagram.edges,
             createdAt=diagram.createdAt,
             updatedAt=diagram.updatedAt,
+            isPublic=diagram.isPublic,
+            collaborators=diagram.collaborators,
         )
         for diagram in diagrams
     ]
 
 
 @router.get("/diagrams/{diagram_id}", response_model=DiagramResponse)
-async def get_diagram(diagram_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Get a specific diagram (requires authentication and ownership)."""
+async def get_diagram(
+    diagram_id: str, current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get a specific diagram (requires authentication and access permission)."""
+    # First check if user owns the diagram
     diagram = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
 
     if not diagram:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
+        # Check if user has collaborator access
+        has_access, error_msg = validate_diagram_access(
+            current_user["user_id"], diagram_id, "read"
         )
+        if not has_access:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
+
+        # Find the diagram (inefficient - should be optimized with better DB design)
+        shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(
+            current_user["user_id"]
+        )
+        diagram = next((d for d in shared_diagrams if d.id == diagram_id), None)
+
+        if not diagram:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
+            )
 
     return DiagramResponse(
         id=diagram.id,
@@ -78,6 +110,8 @@ async def get_diagram(diagram_id: str, current_user: Dict[str, Any] = Depends(ge
         edges=diagram.edges,
         createdAt=diagram.createdAt,
         updatedAt=diagram.updatedAt,
+        isPublic=diagram.isPublic,
+        collaborators=diagram.collaborators,
     )
 
 
@@ -87,17 +121,31 @@ async def update_diagram(
     request: DiagramUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Update an existing diagram (requires authentication and ownership)."""
-    # Check if diagram exists and belongs to user
-    existing = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
-    if not existing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
-        )
+    """Update an existing diagram (requires authentication and edit permission)."""
+    # Check if user has edit permission
+    has_access, error_msg = validate_diagram_access(
+        current_user["user_id"], diagram_id, "update"
+    )
+    if not has_access:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
 
-    # Update diagram
-    diagram = dynamodb_service.update_diagram(
-        user_id=current_user["user_id"],
+    # Get the diagram (could be owned or shared)
+    diagram = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
+    if not diagram:
+        # Find in shared diagrams
+        shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(
+            current_user["user_id"]
+        )
+        diagram = next((d for d in shared_diagrams if d.id == diagram_id), None)
+
+        if not diagram:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
+            )
+
+    # Update diagram (only owner can update in DynamoDB)
+    updated_diagram = dynamodb_service.update_diagram(
+        user_id=diagram.userId,  # Use the actual owner ID
         diagram_id=diagram_id,
         title=request.title,
         description=request.description,
@@ -105,21 +153,23 @@ async def update_diagram(
         edges=request.edges,
     )
 
-    if not diagram:
+    if not updated_diagram:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update diagram",
         )
 
     return DiagramResponse(
-        id=diagram.id,
-        userId=diagram.userId,
-        title=diagram.title,
-        description=diagram.description,
-        nodes=diagram.nodes,
-        edges=diagram.edges,
-        createdAt=diagram.createdAt,
-        updatedAt=diagram.updatedAt,
+        id=updated_diagram.id,
+        userId=updated_diagram.userId,
+        title=updated_diagram.title,
+        description=updated_diagram.description,
+        nodes=updated_diagram.nodes,
+        edges=updated_diagram.edges,
+        createdAt=updated_diagram.createdAt,
+        updatedAt=updated_diagram.updatedAt,
+        isPublic=updated_diagram.isPublic,
+        collaborators=updated_diagram.collaborators,
     )
 
 
@@ -136,9 +186,7 @@ async def delete_diagram(
         )
 
     # Delete diagram
-    success = dynamodb_service.delete_diagram(
-        current_user["user_id"], diagram_id
-    )
+    success = dynamodb_service.delete_diagram(current_user["user_id"], diagram_id)
 
     if not success:
         raise HTTPException(
@@ -147,3 +195,192 @@ async def delete_diagram(
         )
 
     return None
+
+
+# Sharing endpoints
+@router.post("/diagrams/{diagram_id}/share", response_model=ShareResponse)
+async def share_diagram(
+    diagram_id: str,
+    request: ShareRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Share a diagram with another user."""
+    # Check if user has permission to share (must be owner)
+    has_access, error_msg = validate_diagram_access(
+        current_user["user_id"], diagram_id, "share"
+    )
+    if not has_access:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
+
+    # Check collaborator limit
+    is_valid, limit_msg = validate_collaborator_limit(
+        diagram_id, current_user["user_id"]
+    )
+    if not is_valid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=limit_msg)
+
+    # Get the diagram
+    existing = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
+        )
+
+    # Get the user to share with
+    share_user = dynamodb_service.get_user_by_email(request.email)
+    if not share_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    # Don't allow sharing with yourself
+    if share_user.id == current_user["user_id"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot share with yourself"
+        )
+
+    # Check if already shared
+    collaborators = dynamodb_service.get_diagram_collaborators(
+        diagram_id, current_user["user_id"]
+    )
+    existing_collaborator = next(
+        (c for c in collaborators if c.userId == share_user.id), None
+    )
+
+    if existing_collaborator:
+        # Update permission if different
+        if existing_collaborator.permission != request.permission:
+            success = dynamodb_service.update_collaborator_permission(
+                diagram_id, current_user["user_id"], share_user.id, request.permission
+            )
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to update collaborator permission",
+                )
+            message = "Collaborator permission updated"
+        else:
+            message = "Diagram already shared with this user"
+    else:
+        # Add new collaborator
+        from datetime import datetime, timezone
+
+        collaborator = Collaborator(
+            userId=share_user.id,
+            email=share_user.email,
+            name=share_user.name,
+            picture=share_user.picture,
+            permission=request.permission,
+            addedAt=datetime.now(timezone.utc).isoformat(),
+        )
+
+        success = dynamodb_service.share_diagram(
+            diagram_id, current_user["user_id"], collaborator
+        )
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to share diagram",
+            )
+        message = "Diagram shared successfully"
+
+    return ShareResponse(
+        success=True,
+        message=message,
+        collaborator=collaborator if not existing_collaborator else None,
+    )
+
+
+@router.get("/diagrams/{diagram_id}/collaborators", response_model=List[Collaborator])
+async def get_diagram_collaborators(
+    diagram_id: str, current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get all collaborators for a diagram."""
+    # Check if diagram exists and belongs to user
+    existing = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
+        )
+
+    collaborators = dynamodb_service.get_diagram_collaborators(
+        diagram_id, current_user["user_id"]
+    )
+    return collaborators
+
+
+@router.put("/diagrams/{diagram_id}/collaborators/{collaborator_user_id}")
+async def update_collaborator_permission(
+    diagram_id: str,
+    collaborator_user_id: str,
+    permission: Permission,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Update a collaborator's permission level."""
+    # Check if diagram exists and belongs to user
+    existing = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
+        )
+
+    success = dynamodb_service.update_collaborator_permission(
+        diagram_id, current_user["user_id"], collaborator_user_id, permission
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update collaborator permission",
+        )
+
+    return {"success": True, "message": "Collaborator permission updated"}
+
+
+@router.delete("/diagrams/{diagram_id}/collaborators/{collaborator_user_id}")
+async def remove_collaborator(
+    diagram_id: str,
+    collaborator_user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Remove a collaborator from a diagram."""
+    # Check if diagram exists and belongs to user
+    existing = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
+        )
+
+    success = dynamodb_service.remove_collaborator(
+        diagram_id, current_user["user_id"], collaborator_user_id
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to remove collaborator",
+        )
+
+    return {"success": True, "message": "Collaborator removed"}
+
+
+@router.get("/shared-diagrams", response_model=List[DiagramResponse])
+async def get_shared_diagrams(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get all diagrams shared with the current user."""
+    diagrams = dynamodb_service.get_shared_diagrams_for_user(current_user["user_id"])
+
+    return [
+        DiagramResponse(
+            id=diagram.id,
+            userId=diagram.userId,
+            title=diagram.title,
+            description=diagram.description,
+            nodes=diagram.nodes,
+            edges=diagram.edges,
+            createdAt=diagram.createdAt,
+            updatedAt=diagram.updatedAt,
+            isPublic=diagram.isPublic,
+            collaborators=diagram.collaborators,
+        )
+        for diagram in diagrams
+    ]
