@@ -12,7 +12,7 @@ from mypy_boto3_dynamodb.service_resource import Table
 
 from app.utils.config import get_settings
 from app.models.auth_models import User
-from app.models.diagram_models import Diagram
+from app.models.diagram_models import Diagram, Collaborator, Permission
 
 settings = get_settings()
 
@@ -77,12 +77,14 @@ class DynamoDBService:
         if existing_user:
             # If creating with Google ID and existing user doesn't have it, update
             if google_id and not existing_user.googleId:
-                updated_user = self.update_user_google_id(existing_user.id, google_id, picture)
+                updated_user = self.update_user_google_id(
+                    existing_user.id, google_id, picture
+                )
                 if updated_user:
                     return updated_user
             # Otherwise return existing user
             return existing_user
-        
+
         user_id = str(uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
@@ -104,12 +106,11 @@ class DynamoDBService:
         try:
             # Use ConditionExpression to prevent creating if ID already exists
             self.users_table.put_item(
-                Item=item,
-                ConditionExpression="attribute_not_exists(id)"
+                Item=item, ConditionExpression="attribute_not_exists(id)"
             )
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code')  # type: ignore[union-attr]
-            if error_code == 'ConditionalCheckFailedException':
+            error_code = e.response.get("Error", {}).get("Code")  # type: ignore[union-attr]
+            if error_code == "ConditionalCheckFailedException":
                 # User was created by another request, fetch and return it
                 existing_user = self.get_user_by_email(email)
                 if existing_user:
@@ -159,22 +160,24 @@ class DynamoDBService:
         except ClientError:
             return None
 
-    def update_user_google_id(self, user_id: str, google_id: str, picture: Optional[str] = None) -> Optional[User]:
+    def update_user_google_id(
+        self, user_id: str, google_id: str, picture: Optional[str] = None
+    ) -> Optional[User]:
         """Update user's Google ID and picture (for linking Google account to existing user)."""
         try:
             now = datetime.now(timezone.utc).isoformat()
-            
+
             update_expression = "SET googleId = :google_id, updatedAt = :updated"
             expression_values: Dict[str, Any] = {
                 ":google_id": google_id,
                 ":updated": now,
             }
-            
+
             # Add picture to update if provided
             if picture:
                 update_expression += ", picture = :picture"
                 expression_values[":picture"] = picture
-            
+
             response = self.users_table.update_item(
                 Key={"id": user_id},
                 UpdateExpression=update_expression,
@@ -242,16 +245,16 @@ class DynamoDBService:
             )
             response_items = response.get("Items", [])
             items.extend(response_items)
-            
+
             # Continue fetching if there are more pages
             while "LastEvaluatedKey" in response:
                 response = self.diagrams_table.query(
                     KeyConditionExpression=Key("userId").eq(user_id),
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
                 )
                 response_items = response.get("Items", [])
                 items.extend(response_items)
-            
+
             # Convert Decimal back to float for JSON serialization
             items_float = [convert_decimal_to_float(item) for item in items]
             return [Diagram(**item) for item in items_float]
@@ -340,6 +343,162 @@ class DynamoDBService:
         except ClientError:
             return False
 
+    # Sharing operations
+    def share_diagram(self, diagram_id: str, owner_id: str, collaborator: Collaborator) -> bool:
+        """Share a diagram with a collaborator."""
+        try:
+            # Get the current diagram
+            diagram = self.get_diagram(owner_id, diagram_id)
+            if not diagram:
+                return False
+            
+            # Check if collaborator already exists
+            existing_collaborator = next(
+                (c for c in diagram.collaborators if c.userId == collaborator.userId), 
+                None
+            )
+            
+            if existing_collaborator:
+                # Update existing collaborator's permission
+                existing_collaborator.permission = collaborator.permission
+                existing_collaborator.addedAt = collaborator.addedAt
+            else:
+                # Add new collaborator
+                diagram.collaborators.append(collaborator)
+            
+            # Update the diagram in DynamoDB
+            self.diagrams_table.update_item(
+                Key={"userId": owner_id, "id": diagram_id},
+                UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
+                ExpressionAttributeValues={
+                    ":collaborators": [convert_floats_to_decimal(c.dict()) for c in diagram.collaborators],
+                    ":updated": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            return True
+        except ClientError:
+            return False
+
+    def remove_collaborator(self, diagram_id: str, owner_id: str, collaborator_user_id: str) -> bool:
+        """Remove a collaborator from a diagram."""
+        try:
+            # Get the current diagram
+            diagram = self.get_diagram(owner_id, diagram_id)
+            if not diagram:
+                return False
+            
+            # Remove the collaborator
+            diagram.collaborators = [
+                c for c in diagram.collaborators if c.userId != collaborator_user_id
+            ]
+            
+            # Update the diagram in DynamoDB
+            self.diagrams_table.update_item(
+                Key={"userId": owner_id, "id": diagram_id},
+                UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
+                ExpressionAttributeValues={
+                    ":collaborators": [convert_floats_to_decimal(c.dict()) for c in diagram.collaborators],
+                    ":updated": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            return True
+        except ClientError:
+            return False
+
+    def update_collaborator_permission(self, diagram_id: str, owner_id: str, collaborator_user_id: str, permission: Permission) -> bool:
+        """Update a collaborator's permission level."""
+        try:
+            # Get the current diagram
+            diagram = self.get_diagram(owner_id, diagram_id)
+            if not diagram:
+                return False
+            
+            # Find and update the collaborator
+            for collaborator in diagram.collaborators:
+                if collaborator.userId == collaborator_user_id:
+                    collaborator.permission = permission
+                    break
+            else:
+                return False  # Collaborator not found
+            
+            # Update the diagram in DynamoDB
+            self.diagrams_table.update_item(
+                Key={"userId": owner_id, "id": diagram_id},
+                UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
+                ExpressionAttributeValues={
+                    ":collaborators": [convert_floats_to_decimal(c.dict()) for c in diagram.collaborators],
+                    ":updated": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            return True
+        except ClientError:
+            return False
+
+    def get_diagram_collaborators(self, diagram_id: str, owner_id: str) -> List[Collaborator]:
+        """Get all collaborators for a diagram."""
+        try:
+            diagram = self.get_diagram(owner_id, diagram_id)
+            return diagram.collaborators if diagram else []
+        except ClientError:
+            return []
+
+    def check_collaborator_permission(self, diagram_id: str, user_id: str) -> Optional[Permission]:
+        """Check if a user has access to a diagram and return their permission level."""
+        try:
+            # First check if user is the owner
+            diagram = self.get_diagram(user_id, diagram_id)
+            if diagram:
+                return Permission.EDIT  # Owner has edit permission
+            
+            # Check if user is a collaborator
+            # We need to find the diagram by scanning or using a GSI
+            # For now, we'll scan the table (not efficient for production)
+            response = self.diagrams_table.scan()
+            items = response.get("Items", [])
+            
+            for item in items:
+                item_float = convert_decimal_to_float(item)
+                if item_float.get("id") == diagram_id:
+                    collaborators = item_float.get("collaborators", [])
+                    for collab_data in collaborators:
+                        if collab_data.get("userId") == user_id:
+                            return Permission(collab_data.get("permission"))
+            
+            return None
+        except ClientError:
+            return None
+
+    def get_shared_diagrams_for_user(self, user_id: str) -> List[Diagram]:
+        """Get all diagrams shared with a user."""
+        try:
+            shared_diagrams = []
+            
+            # Scan all diagrams to find those where user is a collaborator
+            response = self.diagrams_table.scan()
+            items = response.get("Items", [])
+            
+            # Handle pagination
+            while "LastEvaluatedKey" in response:
+                response = self.diagrams_table.scan(
+                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                )
+                items.extend(response.get("Items", []))
+            
+            for item in items:
+                item_float = convert_decimal_to_float(item)
+                collaborators = item_float.get("collaborators", [])
+                
+                # Check if user is a collaborator
+                for collab_data in collaborators:
+                    if collab_data.get("userId") == user_id:
+                        diagram = Diagram(**item_float)
+                        shared_diagrams.append(diagram)
+                        break
+            
+            return shared_diagrams
+        except ClientError:
+            return []
+
     # Problem operations
     def get_all_problems(self) -> List[Dict[str, Any]]:
         """Get all problems from DynamoDB."""
@@ -347,14 +506,14 @@ class DynamoDBService:
             items: List[Dict[str, Any]] = []
             response = self.problems_table.scan()
             items.extend(response.get("Items", []))
-            
+
             # Handle pagination
             while "LastEvaluatedKey" in response:
                 response = self.problems_table.scan(
                     ExclusiveStartKey=response["LastEvaluatedKey"]
                 )
                 items.extend(response.get("Items", []))
-            
+
             return items
         except ClientError:
             return []
@@ -373,19 +532,19 @@ class DynamoDBService:
             items: List[Dict[str, Any]] = []
             response = self.problems_table.query(
                 IndexName="category-index",
-                KeyConditionExpression=Key("category").eq(category)
+                KeyConditionExpression=Key("category").eq(category),
             )
             items.extend(response.get("Items", []))
-            
+
             # Handle pagination
             while "LastEvaluatedKey" in response:
                 response = self.problems_table.query(
                     IndexName="category-index",
                     KeyConditionExpression=Key("category").eq(category),
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
                 )
                 items.extend(response.get("Items", []))
-            
+
             return items
         except ClientError:
             return []
@@ -396,19 +555,19 @@ class DynamoDBService:
             items: List[Dict[str, Any]] = []
             response = self.problems_table.query(
                 IndexName="difficulty-index",
-                KeyConditionExpression=Key("difficulty").eq(difficulty)
+                KeyConditionExpression=Key("difficulty").eq(difficulty),
             )
             items.extend(response.get("Items", []))
-            
+
             # Handle pagination
             while "LastEvaluatedKey" in response:
                 response = self.problems_table.query(
                     IndexName="difficulty-index",
                     KeyConditionExpression=Key("difficulty").eq(difficulty),
-                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
                 )
                 items.extend(response.get("Items", []))
-            
+
             return items
         except ClientError:
             return []
