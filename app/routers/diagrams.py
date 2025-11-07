@@ -23,6 +23,52 @@ router = APIRouter()
 DIAGRAM_NOT_FOUND = "Diagram not found"
 
 
+def enrich_diagram_response(diagram, current_user_id: str) -> DiagramResponse:
+    """Enrich diagram with ownership and permission information."""
+    is_owner = diagram.userId == current_user_id
+
+    # Determine user's permission
+    if is_owner:
+        permission = "owner"
+    else:
+        # Find user's permission from collaborators list
+        permission = None
+        for collab in diagram.collaborators or []:
+            if collab.userId == current_user_id:
+                permission = collab.permission.value
+                break
+        if not permission:
+            permission = "read"  # Default fallback
+
+    # Get owner information
+    owner_info = None
+    if diagram.userId:
+        owner = dynamodb_service.get_user_by_id(diagram.userId)
+        if owner:
+            owner_info = {
+                "id": owner.id,
+                "name": owner.name or "Anonymous",
+                "email": owner.email,
+                "pictureUrl": owner.picture or None,
+            }
+
+    return DiagramResponse(
+        id=diagram.id,
+        userId=diagram.userId,
+        title=diagram.title,
+        description=diagram.description,
+        nodes=diagram.nodes,
+        edges=diagram.edges,
+        createdAt=diagram.createdAt,
+        updatedAt=diagram.updatedAt,
+        isPublic=diagram.isPublic,
+        collaborators=diagram.collaborators,
+        isOwner=is_owner,
+        permission=permission,
+        owner=owner_info,
+    )
+
+
 @router.post(
     "/diagrams", response_model=DiagramResponse, status_code=status.HTTP_201_CREATED
 )
@@ -30,48 +76,34 @@ async def create_diagram(
     request: DiagramCreate, current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """Save a new diagram (requires authentication)."""
+    user_id = current_user["user_id"]
+
     diagram = dynamodb_service.create_diagram(
-        user_id=current_user["user_id"],
+        user_id=user_id,
         title=request.title,
         description=request.description,
         nodes=request.nodes,
         edges=request.edges,
     )
 
-    return DiagramResponse(
-        id=diagram.id,
-        userId=diagram.userId,
-        title=diagram.title,
-        description=diagram.description,
-        nodes=diagram.nodes,
-        edges=diagram.edges,
-        createdAt=diagram.createdAt,
-        updatedAt=diagram.updatedAt,
-        isPublic=diagram.isPublic,
-        collaborators=diagram.collaborators,
-    )
+    return enrich_diagram_response(diagram, user_id)
 
 
 @router.get("/diagrams", response_model=List[DiagramResponse])
 async def get_diagrams(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """Get all diagrams for the authenticated user."""
-    diagrams = dynamodb_service.get_diagrams_by_user(current_user["user_id"])
+    """Get all diagrams for the authenticated user (owned + shared)."""
+    user_id = current_user["user_id"]
 
-    return [
-        DiagramResponse(
-            id=diagram.id,
-            userId=diagram.userId,
-            title=diagram.title,
-            description=diagram.description,
-            nodes=diagram.nodes,
-            edges=diagram.edges,
-            createdAt=diagram.createdAt,
-            updatedAt=diagram.updatedAt,
-            isPublic=diagram.isPublic,
-            collaborators=diagram.collaborators,
-        )
-        for diagram in diagrams
-    ]
+    # Get owned diagrams
+    owned_diagrams = dynamodb_service.get_diagrams_by_user(user_id)
+
+    # Get shared diagrams
+    shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(user_id)
+
+    # Combine and enrich all diagrams
+    all_diagrams = owned_diagrams + shared_diagrams
+
+    return [enrich_diagram_response(diagram, user_id) for diagram in all_diagrams]
 
 
 @router.get("/diagrams/{diagram_id}", response_model=DiagramResponse)
@@ -79,21 +111,19 @@ async def get_diagram(
     diagram_id: str, current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """Get a specific diagram (requires authentication and access permission)."""
+    user_id = current_user["user_id"]
+
     # First check if user owns the diagram
-    diagram = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
+    diagram = dynamodb_service.get_diagram(user_id, diagram_id)
 
     if not diagram:
         # Check if user has collaborator access
-        has_access, error_msg = validate_diagram_access(
-            current_user["user_id"], diagram_id, "read"
-        )
+        has_access, error_msg = validate_diagram_access(user_id, diagram_id, "read")
         if not has_access:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
 
-        # Find the diagram (inefficient - should be optimized with better DB design)
-        shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(
-            current_user["user_id"]
-        )
+        # Find the diagram in shared diagrams
+        shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(user_id)
         diagram = next((d for d in shared_diagrams if d.id == diagram_id), None)
 
         if not diagram:
@@ -101,18 +131,7 @@ async def get_diagram(
                 status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
             )
 
-    return DiagramResponse(
-        id=diagram.id,
-        userId=diagram.userId,
-        title=diagram.title,
-        description=diagram.description,
-        nodes=diagram.nodes,
-        edges=diagram.edges,
-        createdAt=diagram.createdAt,
-        updatedAt=diagram.updatedAt,
-        isPublic=diagram.isPublic,
-        collaborators=diagram.collaborators,
-    )
+    return enrich_diagram_response(diagram, user_id)
 
 
 @router.put("/diagrams/{diagram_id}", response_model=DiagramResponse)
@@ -122,20 +141,18 @@ async def update_diagram(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Update an existing diagram (requires authentication and edit permission)."""
+    user_id = current_user["user_id"]
+
     # Check if user has edit permission
-    has_access, error_msg = validate_diagram_access(
-        current_user["user_id"], diagram_id, "update"
-    )
+    has_access, error_msg = validate_diagram_access(user_id, diagram_id, "update")
     if not has_access:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
 
     # Get the diagram (could be owned or shared)
-    diagram = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
+    diagram = dynamodb_service.get_diagram(user_id, diagram_id)
     if not diagram:
         # Find in shared diagrams
-        shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(
-            current_user["user_id"]
-        )
+        shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(user_id)
         diagram = next((d for d in shared_diagrams if d.id == diagram_id), None)
 
         if not diagram:
@@ -159,18 +176,7 @@ async def update_diagram(
             detail="Failed to update diagram",
         )
 
-    return DiagramResponse(
-        id=updated_diagram.id,
-        userId=updated_diagram.userId,
-        title=updated_diagram.title,
-        description=updated_diagram.description,
-        nodes=updated_diagram.nodes,
-        edges=updated_diagram.edges,
-        createdAt=updated_diagram.createdAt,
-        updatedAt=updated_diagram.updatedAt,
-        isPublic=updated_diagram.isPublic,
-        collaborators=updated_diagram.collaborators,
-    )
+    return enrich_diagram_response(updated_diagram, user_id)
 
 
 @router.delete("/diagrams/{diagram_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -367,20 +373,7 @@ async def remove_collaborator(
 @router.get("/shared-diagrams", response_model=List[DiagramResponse])
 async def get_shared_diagrams(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Get all diagrams shared with the current user."""
-    diagrams = dynamodb_service.get_shared_diagrams_for_user(current_user["user_id"])
+    user_id = current_user["user_id"]
+    diagrams = dynamodb_service.get_shared_diagrams_for_user(user_id)
 
-    return [
-        DiagramResponse(
-            id=diagram.id,
-            userId=diagram.userId,
-            title=diagram.title,
-            description=diagram.description,
-            nodes=diagram.nodes,
-            edges=diagram.edges,
-            createdAt=diagram.createdAt,
-            updatedAt=diagram.updatedAt,
-            isPublic=diagram.isPublic,
-            collaborators=diagram.collaborators,
-        )
-        for diagram in diagrams
-    ]
+    return [enrich_diagram_response(diagram, user_id) for diagram in diagrams]

@@ -79,9 +79,18 @@ def validate_message(message_type: str, data: Dict[str, Any]) -> tuple[bool, str
             if "position" not in data:
                 return False, "Missing 'position' field"
             position = data["position"]
-            if not isinstance(position, dict) or "x" not in position or "y" not in position:
-                return False, "Invalid 'position' format, must contain 'x' and 'y' coordinates"
-            if not isinstance(position["x"], (int, float)) or not isinstance(position["y"], (int, float)):
+            if (
+                not isinstance(position, dict)
+                or "x" not in position
+                or "y" not in position
+            ):
+                return (
+                    False,
+                    "Invalid 'position' format, must contain 'x' and 'y' coordinates",
+                )
+            if not isinstance(position["x"], (int, float)) or not isinstance(
+                position["y"], (int, float)
+            ):
                 return False, "Position coordinates must be numbers"
 
         elif message_type == "diagram_update":
@@ -94,7 +103,7 @@ def validate_message(message_type: str, data: Dict[str, Any]) -> tuple[bool, str
         # Validate timestamp if present
         if "timestamp" in data:
             try:
-                datetime.fromisoformat(data["timestamp"].replace('Z', '+00:00'))
+                datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 return False, "Invalid timestamp format"
 
@@ -104,7 +113,9 @@ def validate_message(message_type: str, data: Dict[str, Any]) -> tuple[bool, str
         return False, f"Message validation error: {str(e)}"
 
 
-async def debounced_save_diagram(diagram_id: str, user_id: str, update_data: Dict[str, Any]):
+async def debounced_save_diagram(
+    diagram_id: str, user_id: str, update_data: Dict[str, Any]
+):
     """Save diagram updates with debouncing (5-second delay)."""
     current_time = time.time()
 
@@ -195,7 +206,11 @@ async def collaborate_on_diagram(
         # Authenticate user
         if not token:
             await websocket.send_json(
-                {"type": "error", "message": "Authentication required", "code": "INVALID_TOKEN"}
+                {
+                    "type": "error",
+                    "message": "Authentication required",
+                    "code": "INVALID_TOKEN",
+                }
             )
             await websocket.close(code=1008)
             return
@@ -208,7 +223,11 @@ async def collaborate_on_diagram(
                 raise ValueError("Invalid token payload")
         except (ValueError, TypeError):
             await websocket.send_json(
-                {"type": "error", "message": "Invalid or expired token", "code": "INVALID_TOKEN"}
+                {
+                    "type": "error",
+                    "message": "Invalid or expired token",
+                    "code": "INVALID_TOKEN",
+                }
             )
             await websocket.close(code=1008)
             return
@@ -216,14 +235,18 @@ async def collaborate_on_diagram(
         # Validate access to diagram
         has_access, error_msg = validate_diagram_access(user_id, diagram_id, "read")
         if not has_access:
-            await websocket.send_json({"type": "error", "message": error_msg, "code": "PERMISSION_DENIED"})
+            await websocket.send_json(
+                {"type": "error", "message": error_msg, "code": "PERMISSION_DENIED"}
+            )
             await websocket.close(code=1008)
             return
 
         # Get full user information for broadcasting
         user = dynamodb_service.get_user_by_id(user_id)
         if not user:
-            await websocket.send_json({"type": "error", "message": "User not found", "code": "INVALID_TOKEN"})
+            await websocket.send_json(
+                {"type": "error", "message": "User not found", "code": "INVALID_TOKEN"}
+            )
             await websocket.close(code=1008)
             return
 
@@ -245,31 +268,67 @@ async def collaborate_on_diagram(
             if uid != user_id:
                 collab_user = dynamodb_service.get_user_by_id(uid)
                 if collab_user:
-                    collaborators.append({
-                        "id": collab_user.id,
-                        "name": collab_user.name or "Anonymous",
-                        "email": collab_user.email,
-                        "pictureUrl": collab_user.picture or None,
-                    })
+                    collaborators.append(
+                        {
+                            "id": collab_user.id,
+                            "name": collab_user.name or "Anonymous",
+                            "email": collab_user.email,
+                            "pictureUrl": collab_user.picture or None,
+                        }
+                    )
 
         # Get current diagram data
         diagram_data = None
+        is_owner = False
+        user_permission = None
+        owner_info = None
+
         try:
             diagram = dynamodb_service.get_diagram(user_id, diagram_id)
-            if not diagram:
+            if diagram:
+                is_owner = True
+            else:
                 # Find in shared diagrams
                 shared_diagrams = dynamodb_service.get_shared_diagrams_for_user(user_id)
                 diagram = next((d for d in shared_diagrams if d.id == diagram_id), None)
 
             if diagram:
+                # Get user's permission level
+                if is_owner:
+                    user_permission = "owner"
+                else:
+                    # Find user's permission from collaborators list
+                    for collab in diagram.collaborators or []:
+                        if collab.userId == user_id:
+                            user_permission = collab.permission.value
+                            break
+
+                # Get owner information
+                if diagram.userId:
+                    owner = dynamodb_service.get_user_by_id(diagram.userId)
+                    if owner:
+                        owner_info = {
+                            "id": owner.id,
+                            "name": owner.name or "Anonymous",
+                            "email": owner.email,
+                            "pictureUrl": owner.picture or None,
+                        }
+
                 diagram_data = {
                     "id": diagram.id,
                     "title": diagram.title or "Untitled Diagram",
+                    "description": diagram.description,
                     "nodes": diagram.nodes or [],
                     "edges": diagram.edges or [],
+                    "isOwner": is_owner,
+                    "permission": user_permission,
+                    "owner": owner_info,
+                    "createdAt": diagram.createdAt,
+                    "updatedAt": diagram.updatedAt,
                 }
-        except Exception:
+        except Exception as e:
             # If we can't get diagram data, continue without it
+            print(f"❌ Failed to get diagram data: {str(e)}")
             pass
 
         # Notify others that user joined
@@ -291,7 +350,7 @@ async def collaborate_on_diagram(
             "rateLimits": {
                 "cursorMove": {"average": 120, "burst": 50},
                 "diagramUpdate": {"average": 10, "burst": 5},
-                "ping": {"average": 1, "burst": 0}
+                "ping": {"average": 1, "burst": 0},
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -309,12 +368,14 @@ async def collaborate_on_diagram(
                 # Validate message format
                 is_valid, validation_error = validate_message(message_type, data)
                 if not is_valid:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": validation_error,
-                        "code": "INVALID_MESSAGE_FORMAT",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": validation_error,
+                            "code": "INVALID_MESSAGE_FORMAT",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
                     continue
 
                 # Apply rate limiting
@@ -325,12 +386,14 @@ async def collaborate_on_diagram(
                     if message_type == "cursor_move":
                         continue  # Silently drop cursor updates when rate limited
                     else:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"Rate limit exceeded for {message_type}",
-                            "code": "RATE_LIMIT_EXCEEDED",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        })
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": f"Rate limit exceeded for {message_type}",
+                                "code": "RATE_LIMIT_EXCEEDED",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
                         continue
 
                 if message_type == "diagram_update":
@@ -340,7 +403,11 @@ async def collaborate_on_diagram(
                     )
                     if not has_edit_access:
                         await websocket.send_json(
-                            {"type": "error", "message": error_msg, "code": "PERMISSION_DENIED"}
+                            {
+                                "type": "error",
+                                "message": error_msg,
+                                "code": "PERMISSION_DENIED",
+                            }
                         )
                         continue
 
@@ -354,7 +421,9 @@ async def collaborate_on_diagram(
 
                     # Schedule debounced save to database
                     try:
-                        await debounced_save_diagram(diagram_id, user_id, data.get("data", {}))
+                        await debounced_save_diagram(
+                            diagram_id, user_id, data.get("data", {})
+                        )
 
                         # Broadcast to all collaborators
                         await notify_collaborators(diagram_id, update_data)

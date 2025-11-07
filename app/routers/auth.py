@@ -60,7 +60,11 @@ async def signup(request: SignupRequest):
 
     return AuthResponse(
         user=UserResponse(
-            id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            picture=user.picture,
+            createdAt=user.createdAt,
         ),
         token=token,
     )
@@ -93,7 +97,11 @@ async def login(request: LoginRequest):
 
     return AuthResponse(
         user=UserResponse(
-            id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            picture=user.picture,
+            createdAt=user.createdAt,
         ),
         token=token,
     )
@@ -141,7 +149,11 @@ async def google_auth(request: GoogleAuthRequest):
 
     return AuthResponse(
         user=UserResponse(
-            id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            picture=user.picture,
+            createdAt=user.createdAt,
         ),
         token=token,
     )
@@ -157,5 +169,9 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
         )
 
     return UserResponse(
-        id=user.id, email=user.email, name=user.name, picture=user.picture, createdAt=user.createdAt
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        picture=user.picture,
+        createdAt=user.createdAt,
     )

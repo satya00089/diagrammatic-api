@@ -15,11 +15,13 @@ router = APIRouter()
 @router.get("/all-problems", response_model=List[ProblemSummary])
 async def get_all_problems(
     category: Optional[str] = Query(None, description="Filter by category"),
-    difficulty: Optional[str] = Query(None, description="Filter by difficulty (easy/medium/hard/very hard)"),
+    difficulty: Optional[str] = Query(
+        None, description="Filter by difficulty (easy/medium/hard/very hard)"
+    ),
 ) -> List[ProblemSummary]:
     """
     Get all problems with summary information, sorted from easy to very hard.
-    
+
     Query Parameters:
         category: Optional filter by category (e.g., 'graphs', 'trees', 'arrays')
         difficulty: Optional filter by difficulty ('easy', 'medium', 'hard', 'very hard')
@@ -56,9 +58,7 @@ async def get_all_problems(
 
 
 @router.get("/problem/{problem_id}", response_model=ProblemDetail)
-async def get_problem_by_id(
-    problem_id: str
-) -> ProblemDetail:
+async def get_problem_by_id(problem_id: str) -> ProblemDetail:
     """
     Get a specific problem by ID with full details.
 
@@ -94,13 +94,13 @@ async def problems_health_check() -> Dict[str, Union[str, int]]:
     try:
         # Try to query a single item to check if DynamoDB is accessible
         problems = dynamodb_service.get_all_problems()
-        
+
         return {
             "status": "healthy",
             "service": "problems",
             "database": "dynamodb",
             "connection": "connected",
-            "problem_count": len(problems) if problems else 0
+            "problem_count": len(problems) if problems else 0,
         }
     except Exception as e:
         logger.error("Error in problems health check: %s", e)

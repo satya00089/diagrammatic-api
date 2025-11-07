@@ -1,30 +1,33 @@
 """Utility functions to generate prompts for system design assessment."""
+
 from app.models.request_models import AssessmentRequest
 
 
 def get_assessment_prompt(request: AssessmentRequest) -> str:
     """Generate the assessment prompt for the given request."""
-    
+
     # Enhanced component description with detailed properties analysis
     components_text = []
     for comp in request.components:
         comp_desc = f'- **{comp.type.value.upper()}**: "{comp.label}"'
-        
+
         if comp.properties:
             # Extract and format component description if available
-            description = comp.properties.get('description', '')
+            description = comp.properties.get("description", "")
             if description:
-                comp_desc += f'\n  Description: {description}'
-            
+                comp_desc += f"\n  Description: {description}"
+
             # Include other relevant properties
-            other_props = {k: v for k, v in comp.properties.items() if k != 'description'}
+            other_props = {
+                k: v for k, v in comp.properties.items() if k != "description"
+            }
             if other_props:
-                comp_desc += f'\n  Additional Properties: {other_props}'
+                comp_desc += f"\n  Additional Properties: {other_props}"
         else:
-            comp_desc += '\n  ⚠️ No description provided - component purpose unclear'
-        
+            comp_desc += "\n  ⚠️ No description provided - component purpose unclear"
+
         components_text.append(comp_desc)
-    
+
     components_text = "\n".join(components_text)
 
     # Enhanced connection descriptions with reasoning
@@ -189,13 +192,10 @@ def get_specialized_prompt(domain: str, request: AssessmentRequest) -> str:
     domain_contexts = {
         "microservices": """Focus on service boundaries, data consistency, and inter-service communication patterns. 
         Pay special attention to how component descriptions justify service decomposition and whether connection descriptions explain inter-service protocols and data exchange patterns.""",
-        
         "data_intensive": """Emphasize data modeling, storage solutions, and data flow patterns. 
         Evaluate whether component descriptions explain data storage decisions, processing capabilities, and whether connections clearly show data flow and transformation steps.""",
-        
         "real_time": """Prioritize latency, throughput, and real-time processing capabilities. 
         Check if component descriptions address performance characteristics and whether connection descriptions explain real-time data flow and processing pipelines.""",
-        
         "security_critical": """Deep dive into security controls, authentication, authorization, and compliance. 
         Ensure component descriptions address security measures, encryption, and access controls, and that connections explain secure communication protocols and data protection.""",
     }

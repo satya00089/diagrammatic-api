@@ -65,7 +65,7 @@ class AuthService:
     def verify_google_token(self, credential: str) -> Dict[str, str]:
         """
         Verify Google OAuth credential and extract user info.
-        
+
         Returns:
             dict with keys: email, name, picture, google_id
         """

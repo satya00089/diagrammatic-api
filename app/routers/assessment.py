@@ -45,7 +45,9 @@ async def assess_system_design(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Assessment failed: {str(e)}") from e
+        raise HTTPException(
+            status_code=500, detail=f"Assessment failed: {str(e)}"
+        ) from e
 
 
 @router.get("/health")
