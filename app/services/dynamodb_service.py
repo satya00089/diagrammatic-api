@@ -344,20 +344,22 @@ class DynamoDBService:
             return False
 
     # Sharing operations
-    def share_diagram(self, diagram_id: str, owner_id: str, collaborator: Collaborator) -> bool:
+    def share_diagram(
+        self, diagram_id: str, owner_id: str, collaborator: Collaborator
+    ) -> bool:
         """Share a diagram with a collaborator."""
         try:
             # Get the current diagram
             diagram = self.get_diagram(owner_id, diagram_id)
             if not diagram:
                 return False
-            
+
             # Check if collaborator already exists
             existing_collaborator = next(
-                (c for c in diagram.collaborators if c.userId == collaborator.userId), 
-                None
+                (c for c in diagram.collaborators if c.userId == collaborator.userId),
+                None,
             )
-            
+
             if existing_collaborator:
                 # Update existing collaborator's permission
                 existing_collaborator.permission = collaborator.permission
@@ -365,54 +367,68 @@ class DynamoDBService:
             else:
                 # Add new collaborator
                 diagram.collaborators.append(collaborator)
-            
+
             # Update the diagram in DynamoDB
             self.diagrams_table.update_item(
                 Key={"userId": owner_id, "id": diagram_id},
                 UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
                 ExpressionAttributeValues={
-                    ":collaborators": [convert_floats_to_decimal(c.dict()) for c in diagram.collaborators],
+                    ":collaborators": [
+                        convert_floats_to_decimal(c.dict())
+                        for c in diagram.collaborators
+                    ],
                     ":updated": datetime.now(timezone.utc).isoformat(),
-                }
+                },
             )
             return True
         except ClientError:
             return False
 
-    def remove_collaborator(self, diagram_id: str, owner_id: str, collaborator_user_id: str) -> bool:
+    def remove_collaborator(
+        self, diagram_id: str, owner_id: str, collaborator_user_id: str
+    ) -> bool:
         """Remove a collaborator from a diagram."""
         try:
             # Get the current diagram
             diagram = self.get_diagram(owner_id, diagram_id)
             if not diagram:
                 return False
-            
+
             # Remove the collaborator
             diagram.collaborators = [
                 c for c in diagram.collaborators if c.userId != collaborator_user_id
             ]
-            
+
             # Update the diagram in DynamoDB
             self.diagrams_table.update_item(
                 Key={"userId": owner_id, "id": diagram_id},
                 UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
                 ExpressionAttributeValues={
-                    ":collaborators": [convert_floats_to_decimal(c.dict()) for c in diagram.collaborators],
+                    ":collaborators": [
+                        convert_floats_to_decimal(c.dict())
+                        for c in diagram.collaborators
+                    ],
                     ":updated": datetime.now(timezone.utc).isoformat(),
-                }
+                },
             )
             return True
         except ClientError:
             return False
 
-    def update_collaborator_permission(self, diagram_id: str, owner_id: str, collaborator_user_id: str, permission: Permission) -> bool:
+    def update_collaborator_permission(
+        self,
+        diagram_id: str,
+        owner_id: str,
+        collaborator_user_id: str,
+        permission: Permission,
+    ) -> bool:
         """Update a collaborator's permission level."""
         try:
             # Get the current diagram
             diagram = self.get_diagram(owner_id, diagram_id)
             if not diagram:
                 return False
-            
+
             # Find and update the collaborator
             for collaborator in diagram.collaborators:
                 if collaborator.userId == collaborator_user_id:
@@ -420,21 +436,26 @@ class DynamoDBService:
                     break
             else:
                 return False  # Collaborator not found
-            
+
             # Update the diagram in DynamoDB
             self.diagrams_table.update_item(
                 Key={"userId": owner_id, "id": diagram_id},
                 UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
                 ExpressionAttributeValues={
-                    ":collaborators": [convert_floats_to_decimal(c.dict()) for c in diagram.collaborators],
+                    ":collaborators": [
+                        convert_floats_to_decimal(c.dict())
+                        for c in diagram.collaborators
+                    ],
                     ":updated": datetime.now(timezone.utc).isoformat(),
-                }
+                },
             )
             return True
         except ClientError:
             return False
 
-    def get_diagram_collaborators(self, diagram_id: str, owner_id: str) -> List[Collaborator]:
+    def get_diagram_collaborators(
+        self, diagram_id: str, owner_id: str
+    ) -> List[Collaborator]:
         """Get all collaborators for a diagram."""
         try:
             diagram = self.get_diagram(owner_id, diagram_id)
@@ -442,20 +463,22 @@ class DynamoDBService:
         except ClientError:
             return []
 
-    def check_collaborator_permission(self, diagram_id: str, user_id: str) -> Optional[Permission]:
+    def check_collaborator_permission(
+        self, diagram_id: str, user_id: str
+    ) -> Optional[Permission]:
         """Check if a user has access to a diagram and return their permission level."""
         try:
             # First check if user is the owner
             diagram = self.get_diagram(user_id, diagram_id)
             if diagram:
                 return Permission.EDIT  # Owner has edit permission
-            
+
             # Check if user is a collaborator
             # We need to find the diagram by scanning or using a GSI
             # For now, we'll scan the table (not efficient for production)
             response = self.diagrams_table.scan()
             items = response.get("Items", [])
-            
+
             for item in items:
                 item_float = convert_decimal_to_float(item)
                 if item_float.get("id") == diagram_id:
@@ -463,7 +486,7 @@ class DynamoDBService:
                     for collab_data in collaborators:
                         if collab_data.get("userId") == user_id:
                             return Permission(collab_data.get("permission"))
-            
+
             return None
         except ClientError:
             return None
@@ -472,29 +495,29 @@ class DynamoDBService:
         """Get all diagrams shared with a user."""
         try:
             shared_diagrams = []
-            
+
             # Scan all diagrams to find those where user is a collaborator
             response = self.diagrams_table.scan()
             items = response.get("Items", [])
-            
+
             # Handle pagination
             while "LastEvaluatedKey" in response:
                 response = self.diagrams_table.scan(
                     ExclusiveStartKey=response["LastEvaluatedKey"]
                 )
                 items.extend(response.get("Items", []))
-            
+
             for item in items:
                 item_float = convert_decimal_to_float(item)
                 collaborators = item_float.get("collaborators", [])
-                
+
                 # Check if user is a collaborator
                 for collab_data in collaborators:
                     if collab_data.get("userId") == user_id:
                         diagram = Diagram(**item_float)
                         shared_diagrams.append(diagram)
                         break
-            
+
             return shared_diagrams
         except ClientError:
             return []

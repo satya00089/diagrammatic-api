@@ -7,14 +7,14 @@ from enum import Enum
 
 class Permission(str, Enum):
     """Permission levels for diagram sharing."""
-    
+
     READ = "read"
     EDIT = "edit"
 
 
 class Collaborator(BaseModel):
     """Model for diagram collaborators."""
-    
+
     userId: str
     email: str
     name: Optional[str] = None
@@ -25,14 +25,14 @@ class Collaborator(BaseModel):
 
 class ShareRequest(BaseModel):
     """Request model for sharing a diagram."""
-    
+
     email: str = Field(..., description="Email of the user to share with")
     permission: Permission = Field(..., description="Permission level to grant")
 
 
 class ShareResponse(BaseModel):
     """Response model for sharing operations."""
-    
+
     success: bool
     message: str
     collaborator: Optional[Collaborator] = None
@@ -67,8 +67,23 @@ class DiagramResponse(BaseModel):
     edges: List[Any]
     createdAt: str
     updatedAt: str
-    isPublic: bool = Field(default=False, description="Whether the diagram is publicly accessible")
-    collaborators: List[Collaborator] = Field(default_factory=list, description="List of collaborators with access")
+    isPublic: bool = Field(
+        default=False, description="Whether the diagram is publicly accessible"
+    )
+    collaborators: List[Collaborator] = Field(
+        default_factory=list, description="List of collaborators with access"
+    )
+
+    # Ownership and permission fields
+    isOwner: Optional[bool] = Field(
+        default=None, description="Whether the current user is the owner"
+    )
+    permission: Optional[str] = Field(
+        default=None, description="Current user's permission level (owner/edit/read)"
+    )
+    owner: Optional[dict] = Field(
+        default=None, description="Owner information (id, name, email, pictureUrl)"
+    )
 
     class Config:
         """Pydantic config."""

@@ -69,49 +69,55 @@ def validate_connections(request: AssessmentRequest) -> Tuple[bool, List[str]]:
     return len(issues) == 0, issues
 
 
-def validate_sharing_permission(user_id: str, diagram_id: str, required_permission: Permission = Permission.READ) -> Tuple[bool, str]:
+def validate_sharing_permission(
+    user_id: str, diagram_id: str, required_permission: Permission = Permission.READ
+) -> Tuple[bool, str]:
     """
     Validate if a user has the required permission to access a diagram.
-    
+
     Returns (has_permission, error_message)
     """
     # Check if user is the owner
     diagram = dynamodb_service.get_diagram(user_id, diagram_id)
     if diagram:
         return True, ""  # Owner has full access
-    
+
     # Check if user is a collaborator with sufficient permission
     permission = dynamodb_service.check_collaborator_permission(diagram_id, user_id)
     if permission is None:
         return False, "Access denied: You do not have permission to access this diagram"
-    
+
     if required_permission == Permission.EDIT and permission == Permission.READ:
         return False, "Access denied: You only have read permission for this diagram"
-    
+
     return True, ""
 
 
-def validate_diagram_access(user_id: str, diagram_id: str, action: str = "access") -> Tuple[bool, str]:
+def validate_diagram_access(
+    user_id: str, diagram_id: str, action: str = "access"
+) -> Tuple[bool, str]:
     """
     Validate if a user can perform an action on a diagram.
-    
+
     Returns (can_access, error_message)
     """
     required_permission = Permission.READ
     if action in ["update", "delete", "share"]:
         required_permission = Permission.EDIT
-    
+
     return validate_sharing_permission(user_id, diagram_id, required_permission)
 
 
-def validate_collaborator_limit(diagram_id: str, owner_id: str, max_collaborators: int = 50) -> Tuple[bool, str]:
+def validate_collaborator_limit(
+    diagram_id: str, owner_id: str, max_collaborators: int = 50
+) -> Tuple[bool, str]:
     """
     Validate that the diagram hasn't exceeded the maximum number of collaborators.
-    
+
     Returns (is_valid, error_message)
     """
     collaborators = dynamodb_service.get_diagram_collaborators(diagram_id, owner_id)
     if len(collaborators) >= max_collaborators:
         return False, f"Maximum number of collaborators ({max_collaborators}) exceeded"
-    
+
     return True, ""

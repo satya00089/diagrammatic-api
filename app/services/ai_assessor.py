@@ -108,11 +108,12 @@ class AIAssessorService:
         component_count = len(request.components)
         has_database = any(c.type == "database" for c in request.components)
         has_load_balancer = any(c.type == "load-balancer" for c in request.components)
-        
+
         # Check for component descriptions
         components_with_descriptions = sum(
-            1 for c in request.components 
-            if c.properties and c.properties.get('description', '').strip()
+            1
+            for c in request.components
+            if c.properties and c.properties.get("description", "").strip()
         )
         description_score = min(components_with_descriptions * 20, 80)
 
@@ -124,8 +125,9 @@ class AIAssessorService:
 
         # Create list of components missing descriptions
         missing_descriptions = [
-            c.label for c in request.components 
-            if not (c.properties and c.properties.get('description', '').strip())
+            c.label
+            for c in request.components
+            if not (c.properties and c.properties.get("description", "").strip())
         ]
 
         return AssessmentResponse(
@@ -147,9 +149,16 @@ class AIAssessorService:
                 )
             ],
             strengths=["Basic architecture components present"],
-            improvements=["Add detailed component documentation and connection reasoning"],
+            improvements=[
+                "Add detailed component documentation and connection reasoning"
+            ],
             missing_components=[],
             missing_descriptions=missing_descriptions,
-            unclear_connections=[] if request.connections else ["No connections defined"],
-            suggestions=["Consider adding monitoring and caching layers", "Provide detailed component descriptions"],
+            unclear_connections=(
+                [] if request.connections else ["No connections defined"]
+            ),
+            suggestions=[
+                "Consider adding monitoring and caching layers",
+                "Provide detailed component descriptions",
+            ],
         )

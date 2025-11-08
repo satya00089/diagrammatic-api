@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     # JWT Configuration
     jwt_secret_key: str = Field(..., validation_alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field("HS256", validation_alias="JWT_ALGORITHM")
-    jwt_access_token_expire_hours: int = Field(24, validation_alias="JWT_ACCESS_TOKEN_EXPIRE_HOURS")
+    jwt_access_token_expire_hours: int = Field(
+        24, validation_alias="JWT_ACCESS_TOKEN_EXPIRE_HOURS"
+    )
 
     # Google OAuth Configuration
     google_client_id: str = Field(..., validation_alias="GOOGLE_CLIENT_ID")
@@ -43,7 +45,9 @@ class Settings(BaseSettings):
     aws_region: str = Field("us-east-1", validation_alias="AWS_REGION")
     aws_access_key_id: str = Field(..., validation_alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str = Field(..., validation_alias="AWS_SECRET_ACCESS_KEY")
-    dynamodb_users_table: str = Field("diagrammatic_users", validation_alias="DYNAMODB_USERS_TABLE")
+    dynamodb_users_table: str = Field(
+        "diagrammatic_users", validation_alias="DYNAMODB_USERS_TABLE"
+    )
     dynamodb_diagrams_table: str = Field(
         "diagrammatic_diagrams", validation_alias="DYNAMODB_DIAGRAMS_TABLE"
     )
