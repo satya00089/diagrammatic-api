@@ -13,6 +13,7 @@ from mypy_boto3_dynamodb.service_resource import Table
 from app.utils.config import get_settings
 from app.models.auth_models import User
 from app.models.diagram_models import Diagram, Collaborator, Permission
+from app.models.attempt_models import AttemptResponse
 
 settings = get_settings()
 
@@ -61,6 +62,7 @@ class DynamoDBService:
         self.users_table: Table = dynamodb.Table(settings.dynamodb_users_table)
         self.diagrams_table: Table = dynamodb.Table(settings.dynamodb_diagrams_table)
         self.problems_table: Table = dynamodb.Table(settings.dynamodb_problems_table)
+        self.attempts_table: Table = dynamodb.Table(settings.dynamodb_attempts_table)
 
     # User operations
     def create_user(
@@ -594,6 +596,143 @@ class DynamoDBService:
             return items
         except ClientError:
             return []
+
+    # Problem attempt operations
+    def create_or_update_attempt(
+        self,
+        user_id: str,
+        problem_id: str,
+        title: str,
+        difficulty: Optional[str],
+        category: Optional[str],
+        nodes: List[Any],
+        edges: List[Any],
+        elapsed_time: int = 0,
+        last_assessment: Optional[dict] = None,
+    ) -> AttemptResponse:
+        """Create or update a problem attempt (upsert operation)."""
+        try:
+            # Get existing attempt to preserve assessment count
+            existing_attempt = self.get_attempt_by_problem(user_id, problem_id)
+            
+            now = datetime.now(timezone.utc).isoformat()
+            
+            # Convert floats to Decimal for DynamoDB
+            nodes_decimal = convert_floats_to_decimal(nodes)
+            edges_decimal = convert_floats_to_decimal(edges)
+            assessment_decimal = (
+                convert_floats_to_decimal(last_assessment) if last_assessment else None
+            )
+            
+            # Increment assessment count if new assessment provided
+            assessment_count = 0
+            if existing_attempt:
+                assessment_count = existing_attempt.assessmentCount
+            if last_assessment:
+                assessment_count += 1
+            
+            item: Dict[str, Any] = {
+                "userId": user_id,
+                "problemId": problem_id,
+                "title": title,
+                "difficulty": difficulty or "Medium",
+                "category": category or "General",
+                "nodes": nodes_decimal,
+                "edges": edges_decimal,
+                "elapsedTime": elapsed_time,
+                "lastAssessment": assessment_decimal,
+                "assessmentCount": assessment_count,
+                "updatedAt": now,
+                "lastAttemptedAt": now,
+            }
+            
+            # Only set createdAt for new attempts
+            if not existing_attempt:
+                item["createdAt"] = now
+            else:
+                item["createdAt"] = existing_attempt.createdAt
+            
+            self.attempts_table.put_item(Item=item)
+            
+            return AttemptResponse(
+                id=f"{user_id}#{problem_id}",  # Composite ID for frontend
+                userId=user_id,
+                problemId=problem_id,
+                title=title,
+                difficulty=difficulty or "Medium",
+                category=category or "General",
+                nodes=nodes,
+                edges=edges,
+                elapsedTime=elapsed_time,
+                lastAssessment=last_assessment,
+                assessmentCount=assessment_count,
+                createdAt=item["createdAt"],
+                updatedAt=now,
+                lastAttemptedAt=now,
+            )
+        except ClientError as e:
+            print(f"Error creating/updating attempt: {e}")
+            raise
+
+
+    def get_attempt_by_problem(
+        self, user_id: str, problem_id: str
+    ) -> Optional[AttemptResponse]:
+        """Get a user's attempt for a specific problem using direct key lookup."""
+        try:
+            response = self.attempts_table.get_item(
+                Key={"userId": user_id, "problemId": problem_id}
+            )
+            
+            item = response.get("Item")
+            if item:
+                item_float: Dict[str, Any] = convert_decimal_to_float(item)
+                # Add composite ID for frontend compatibility
+                item_float["id"] = f"{user_id}#{problem_id}"
+                return AttemptResponse(**item_float)
+            
+            return None
+        except ClientError as e:
+            print(f"Error getting attempt: {e}")
+            return None
+
+    def get_user_attempts(self, user_id: str) -> List[AttemptResponse]:
+        """Get all attempts for a user using partition key query."""
+        try:
+            items: List[Dict[str, Any]] = []
+            response = self.attempts_table.query(
+                KeyConditionExpression=Key("userId").eq(user_id)
+            )
+            response_items = response.get("Items", [])
+            items.extend(response_items)
+
+            # Handle pagination
+            while "LastEvaluatedKey" in response:
+                response = self.attempts_table.query(
+                    KeyConditionExpression=Key("userId").eq(user_id),
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
+                )
+                response_items = response.get("Items", [])
+                items.extend(response_items)
+
+            # Convert Decimal back to float and add composite ID for frontend compatibility
+            items_float = [convert_decimal_to_float(item) for item in items]
+            for item in items_float:
+                item["id"] = f"{item['userId']}#{item['problemId']}"
+            return [AttemptResponse(**item) for item in items_float]
+        except ClientError as e:
+            print(f"Error querying attempts: {e}")
+            return []
+
+    def delete_attempt(self, user_id: str, problem_id: str) -> bool:
+        """Delete a problem attempt using composite key."""
+        try:
+            self.attempts_table.delete_item(
+                Key={"userId": user_id, "problemId": problem_id}
+            )
+            return True
+        except ClientError:
+            return False
 
 
 # Global DynamoDB service instance
