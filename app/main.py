@@ -7,7 +7,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi import FastAPI
 
 from app.utils.config import get_settings
-from app.routers import assessment, problems, auth, diagrams, collaboration
+from app.routers import auth, diagrams, assessment, problems, collaboration, attempts
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.services.dynamodb_service import dynamodb_service
 
@@ -65,6 +65,7 @@ app.include_router(problems.router, prefix="/api/v1", tags=["problems"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(diagrams.router, prefix="/api/v1", tags=["diagrams"])
 app.include_router(collaboration.router, prefix="/api/v1", tags=["collaboration"])
+app.include_router(attempts.router, prefix="/api/v1", tags=["attempts"])
 
 
 @app.get("/")

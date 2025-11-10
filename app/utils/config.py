@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     dynamodb_problems_table: str = Field(
         "diagrammatic_problems", validation_alias="DYNAMODB_PROBLEMS_TABLE"
     )
+    dynamodb_attempts_table: str = Field(
+        "diagrammatic_problem_attempts", validation_alias="DYNAMODB_ATTEMPTS_TABLE"
+    )
 
     class Config:
         """Pydantic configuration to load from .env file."""
