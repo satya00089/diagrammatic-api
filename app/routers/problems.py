@@ -1,11 +1,12 @@
 """API router for problem-related endpoints."""
 
 import logging
-from typing import List, Optional, Dict, Union
+from typing import Any, List, Optional, Dict, Union
 
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from app.models.problem_models import ProblemSummary, ProblemDetail
 from app.services.dynamodb_service import dynamodb_service
+from app.routers.auth import get_current_user
 
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,32 @@ async def get_problem_by_id(problem_id: str) -> ProblemDetail:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch problem from database",
+        ) from e
+
+
+@router.get("/problems/attempted", response_model=List[str])
+async def get_attempted_problems(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+) -> List[str]:
+    """
+    Get list of problem IDs that the user has attempted.
+
+    Returns:
+        List of problem IDs (strings) that the user has attempted.
+    """
+    try:
+        user_id = current_user["user_id"]
+        attempts = dynamodb_service.get_user_attempts(user_id)
+        
+        # Extract just the problem IDs
+        problem_ids = [attempt.problemId for attempt in attempts]
+        
+        return problem_ids
+    except Exception as e:
+        logger.error("Error in get_attempted_problems: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch attempted problems",
         ) from e
 
 

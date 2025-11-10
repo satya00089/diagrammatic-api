@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.models.attempt_models import (
     AttemptCreate,
-    AttemptUpdate,
     AttemptResponse,
 )
 from app.services.dynamodb_service import dynamodb_service
