@@ -3,7 +3,7 @@
 import json
 import asyncio
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -15,10 +15,10 @@ from app.services.auth_service import auth_service
 router = APIRouter()
 
 # Store active connections: diagram_id -> list of (websocket, user_id)
-active_connections: Dict[str, List[tuple]] = {}
+active_connections: Dict[str, List[Tuple[WebSocket, str]]] = {}
 
 # Debounced save tracking: diagram_id -> (last_update_time, pending_data, save_task)
-debounced_saves: Dict[str, tuple] = {}
+debounced_saves: Dict[str, Tuple[float, Dict[str, Any], Any]] = {}
 
 
 class RateLimiter:
@@ -169,13 +169,13 @@ async def debounced_save_diagram(
 
 
 async def notify_collaborators(
-    diagram_id: str, message: Dict[str, Any], exclude_user_id: str = None
+    diagram_id: str, message: Dict[str, Any], exclude_user_id: Optional[str] = None
 ):
     """Notify all collaborators of a diagram about changes."""
     if diagram_id not in active_connections:
         return
 
-    disconnected = []
+    disconnected: List[Tuple[WebSocket, str]] = []
     for websocket, user_id in active_connections[diagram_id]:
         if exclude_user_id and user_id == exclude_user_id:
             continue
@@ -188,7 +188,7 @@ async def notify_collaborators(
 
     # Remove disconnected clients
     for websocket, user_id in disconnected:
-        if websocket in [w for w, u in active_connections[diagram_id]]:
+        if websocket in [w for w, _ in active_connections[diagram_id]]:
             active_connections[diagram_id].remove((websocket, user_id))
 
 
@@ -196,12 +196,13 @@ async def notify_collaborators(
 async def collaborate_on_diagram(
     websocket: WebSocket,
     diagram_id: str,
-    token: str = None,
+    token: Optional[str] = None,
 ):
     """WebSocket endpoint for real-time collaboration on diagrams."""
     await websocket.accept()
 
-    user_id = None
+    user_id: Optional[str] = None
+    user_info: Dict[str, Any] = {}
     try:
         # Authenticate user
         if not token:
@@ -263,8 +264,8 @@ async def collaborate_on_diagram(
         active_connections[diagram_id].append((websocket, user_id))
 
         # Get current collaborators (other users in the same diagram)
-        collaborators = []
-        for ws, uid in active_connections[diagram_id]:
+        collaborators: List[Dict[str, Any]] = []
+        for _, uid in active_connections[diagram_id]:
             if uid != user_id:
                 collab_user = dynamodb_service.get_user_by_id(uid)
                 if collab_user:
@@ -307,14 +308,14 @@ async def collaborate_on_diagram(
                 if diagram.userId:
                     owner = dynamodb_service.get_user_by_id(diagram.userId)
                     if owner:
-                        owner_info = {
+                        owner_info = {  # type: ignore[misc]
                             "id": owner.id,
                             "name": owner.name or "Anonymous",
                             "email": owner.email,
                             "pictureUrl": owner.picture or None,
                         }
 
-                diagram_data = {
+                diagram_data = {  # type: ignore[misc]
                     "id": diagram.id,
                     "title": diagram.title or "Untitled Diagram",
                     "description": diagram.description,
@@ -329,7 +330,6 @@ async def collaborate_on_diagram(
         except Exception as e:
             # If we can't get diagram data, continue without it
             print(f"❌ Failed to get diagram data: {str(e)}")
-            pass
 
         # Notify others that user joined
         await notify_collaborators(
@@ -343,7 +343,7 @@ async def collaborate_on_diagram(
         )
 
         # Send welcome message with collaborators and diagram data
-        welcome_message = {
+        welcome_message = {  # type: ignore[misc]
             "type": "welcome",
             "user": user_info,
             "collaborators": collaborators,
@@ -412,7 +412,7 @@ async def collaborate_on_diagram(
                         continue
 
                     # Broadcast the update to all collaborators
-                    update_data = {
+                    update_data = {  # type: ignore[misc]
                         "type": "diagram_update",
                         "user": user_info,
                         "data": data.get("data", {}),
@@ -426,7 +426,7 @@ async def collaborate_on_diagram(
                         )
 
                         # Broadcast to all collaborators
-                        await notify_collaborators(diagram_id, update_data)
+                        await notify_collaborators(diagram_id, update_data)  # type: ignore[arg-type]
                     except Exception as e:
                         await websocket.send_json(
                             {
@@ -439,14 +439,14 @@ async def collaborate_on_diagram(
 
                 elif message_type == "cursor_move":
                     # Broadcast cursor position to other collaborators
-                    cursor_data = {
+                    cursor_data = {  # type: ignore[misc]
                         "type": "cursor_move",
                         "user": user_info,
                         "position": data.get("position", {}),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     await notify_collaborators(
-                        diagram_id, cursor_data, exclude_user_id=user_id
+                        diagram_id, cursor_data, exclude_user_id=user_id  # type: ignore[arg-type]
                     )
 
                 elif message_type == "ping":
