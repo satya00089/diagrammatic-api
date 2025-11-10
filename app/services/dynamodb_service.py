@@ -626,10 +626,13 @@ class DynamoDBService:
             
             # Increment assessment count if new assessment provided
             assessment_count = 0
+            preserved_assessment = None
             if existing_attempt:
                 assessment_count = existing_attempt.assessmentCount
+                preserved_assessment = existing_attempt.lastAssessment
             if last_assessment:
                 assessment_count += 1
+                preserved_assessment = assessment_decimal
             
             item: Dict[str, Any] = {
                 "userId": user_id,
@@ -640,7 +643,7 @@ class DynamoDBService:
                 "nodes": nodes_decimal,
                 "edges": edges_decimal,
                 "elapsedTime": elapsed_time,
-                "lastAssessment": assessment_decimal,
+                "lastAssessment": preserved_assessment,  # Preserve existing assessment if not updating
                 "assessmentCount": assessment_count,
                 "updatedAt": now,
                 "lastAttemptedAt": now,
@@ -686,10 +689,14 @@ class DynamoDBService:
             
             item = response.get("Item")
             if item:
+                print(f"Retrieved item from DynamoDB: lastAssessment = {item.get('lastAssessment')}")
                 item_float: Dict[str, Any] = convert_decimal_to_float(item)
+                print(f"After decimal conversion: lastAssessment = {item_float.get('lastAssessment')}")
                 # Add composite ID for frontend compatibility
                 item_float["id"] = f"{user_id}#{problem_id}"
-                return AttemptResponse(**item_float)
+                result = AttemptResponse(**item_float)
+                print(f"AttemptResponse: lastAssessment = {result.lastAssessment}")
+                return result
             
             return None
         except ClientError as e:
