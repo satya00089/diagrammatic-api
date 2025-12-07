@@ -58,7 +58,7 @@ class Settings(BaseSettings):
         "diagrammatic_problem_attempts", validation_alias="DYNAMODB_ATTEMPTS_TABLE"
     )
     components_table_name: str = Field(
-        "diagrammatic-components", validation_alias="COMPONENTS_TABLE_NAME"
+        "diagrammatic_components", validation_alias="COMPONENTS_TABLE_NAME"
     )
 
     class Config:

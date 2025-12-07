@@ -4,8 +4,9 @@ Handles DynamoDB operations for component management
 """
 
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 import boto3
+from mypy_boto3_dynamodb.service_resource import DynamoDBServiceResource
 from boto3.dynamodb.conditions import Key, Attr
 from app.utils.config import get_settings
 
@@ -14,10 +15,9 @@ settings = get_settings()
 
 class ComponentsService:
     """Service for managing components in DynamoDB"""
-
     def __init__(self):
         """Initialize DynamoDB client and table"""
-        self.dynamodb = boto3.resource(
+        self.dynamodb: DynamoDBServiceResource = boto3.resource(
             'dynamodb',
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,
@@ -47,7 +47,7 @@ class ComponentsService:
         """
         try:
             # Build query parameters
-            query_params = {
+            query_params: Dict[str, Any] = {
                 'IndexName': 'ProviderIndex',
                 'KeyConditionExpression': Key('provider').eq(provider),
                 'Limit': limit,
@@ -96,7 +96,7 @@ class ComponentsService:
         """
         try:
             # Build query parameters
-            query_params = {
+            query_params: Dict[str, Any] = {
                 'IndexName': 'CategoryIndex',
                 'KeyConditionExpression': Key('category').eq(category),
                 'Limit': limit,
@@ -146,7 +146,7 @@ class ComponentsService:
         try:
             # Build scan parameters (Note: Scan is less efficient than Query)
             # For production, consider using ElasticSearch or DynamoDB Streams + Lambda
-            scan_params = {
+            scan_params: Dict[str, Any] = {
                 'Limit': limit,
                 'FilterExpression': Attr('isActive').eq(True)
             }
@@ -188,14 +188,32 @@ class ComponentsService:
         Get a single component by ID
         
         Args:
-            component_id: Component ID
+            component_id: Component ID (format: {platform}-{component-name})
             
         Returns:
             Component data or None if not found
         """
         try:
+            # Extract platform from component ID (e.g., "aws-s3" -> "aws")
+            platform_prefix = component_id.split('-')[0].lower() if '-' in component_id else ''
+            
+            # Map platform prefix to platform name (matching DynamoDB values)
+            platform_map = {
+                'aws': 'AWS',
+                'azure': 'Azure',
+                'gcp': 'GCP',
+                'kubernetes': 'Kubernetes',
+                'k8s': 'Kubernetes'
+            }
+            
+            platform = platform_map.get(platform_prefix, platform_prefix.capitalize())
+            
+            # Use composite key (platform + id) for get_item
             response = self.table.get_item(
-                Key={'id': component_id}
+                Key={
+                    'platform': platform,
+                    'id': component_id
+                }
             )
             return response.get('Item')
 
@@ -219,7 +237,7 @@ class ComponentsService:
             Dict with items and pagination info
         """
         try:
-            scan_params = {
+            scan_params: Dict[str, Any] = {
                 'Limit': limit,
                 'FilterExpression': Attr('isActive').eq(True)
             }
@@ -244,19 +262,36 @@ class ComponentsService:
         Increment the usage count for a component
         
         Args:
-            component_id: Component ID
+            component_id: Component ID (format: {platform}-{component-name})
             
         Returns:
             Updated component data
         """
         try:
+            # Extract platform from component ID
+            platform_prefix = component_id.split('-')[0].lower() if '-' in component_id else ''
+            
+            # Map platform prefix to platform name
+            platform_map = {
+                'aws': 'AWS',
+                'azure': 'Azure',
+                'gcp': 'GCP',
+                'kubernetes': 'Kubernetes',
+                'k8s': 'Kubernetes'
+            }
+            
+            platform = platform_map.get(platform_prefix, platform_prefix.capitalize())
+            
             response = self.table.update_item(
-                Key={'id': component_id},
+                Key={
+                    'platform': platform,
+                    'id': component_id
+                },
                 UpdateExpression='SET usageCount = if_not_exists(usageCount, :zero) + :inc, updatedAt = :timestamp',
                 ExpressionAttributeValues={
                     ':inc': 1,
                     ':zero': 0,
-                    ':timestamp': datetime.utcnow().isoformat()
+                    ':timestamp': datetime.now(timezone.utc).isoformat()
                 },
                 ReturnValues='ALL_NEW'
             )
@@ -281,10 +316,10 @@ class ComponentsService:
                 FilterExpression=Attr('isActive').eq(True)
             )
 
-            providers = set()
+            providers: set[str] = set()
             for item in response.get('Items', []):
                 if 'provider' in item:
-                    providers.add(item['provider'])
+                    providers.add(str(item['provider']))
 
             # Handle pagination
             while 'LastEvaluatedKey' in response:
@@ -295,9 +330,9 @@ class ComponentsService:
                 )
                 for item in response.get('Items', []):
                     if 'provider' in item:
-                        providers.add(item['provider'])
+                        providers.add(str(item['provider']))
 
-            return sorted(list(providers))
+            return sorted(providers)
 
         except Exception as e:
             print(f"Error getting providers: {e}")
@@ -317,10 +352,10 @@ class ComponentsService:
                 FilterExpression=Attr('isActive').eq(True)
             )
 
-            categories = set()
+            categories: set[str] = set()
             for item in response.get('Items', []):
                 if 'category' in item:
-                    categories.add(item['category'])
+                    categories.add(str(item['category']))
 
             # Handle pagination
             while 'LastEvaluatedKey' in response:
@@ -331,9 +366,9 @@ class ComponentsService:
                 )
                 for item in response.get('Items', []):
                     if 'category' in item:
-                        categories.add(item['category'])
+                        categories.add(str(item['category']))
 
-            return sorted(list(categories))
+            return sorted(categories)
 
         except Exception as e:
             print(f"Error getting categories: {e}")
