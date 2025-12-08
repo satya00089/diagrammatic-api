@@ -54,8 +54,12 @@ async def get_components(
     limit: int = Query(
         100, ge=1, le=500, description="Maximum number of items to return"
     ),
-    lastEvaluatedKey: Optional[str] = Query(
+    last_evaluated_key: Optional[str] = Query(
         None, description="Pagination key (base64 encoded)"
+    ),
+    minimal: bool = Query(
+        False,
+        description="Return minimal fields only (id, provider, label, description, group, iconUrl, tags)",
     ),
 ):
     """
@@ -75,8 +79,8 @@ async def get_components(
                 provider=provider,
                 limit=limit,
                 last_evaluated_key=(
-                    _decode_pagination_key(lastEvaluatedKey)
-                    if lastEvaluatedKey
+                    _decode_pagination_key(last_evaluated_key)
+                    if last_evaluated_key
                     else None
                 ),
             )
@@ -86,8 +90,8 @@ async def get_components(
                 category=category,
                 limit=limit,
                 last_evaluated_key=(
-                    _decode_pagination_key(lastEvaluatedKey)
-                    if lastEvaluatedKey
+                    _decode_pagination_key(last_evaluated_key)
+                    if last_evaluated_key
                     else None
                 ),
             )
@@ -98,8 +102,8 @@ async def get_components(
                 category=category,
                 limit=limit,
                 last_evaluated_key=(
-                    _decode_pagination_key(lastEvaluatedKey)
-                    if lastEvaluatedKey
+                    _decode_pagination_key(last_evaluated_key)
+                    if last_evaluated_key
                     else None
                 ),
             )
@@ -108,15 +112,31 @@ async def get_components(
             result = components_service.get_all_components(
                 limit=limit,
                 last_evaluated_key=(
-                    _decode_pagination_key(lastEvaluatedKey)
-                    if lastEvaluatedKey
+                    _decode_pagination_key(last_evaluated_key)
+                    if last_evaluated_key
                     else None
                 ),
             )
 
+        # Filter to minimal fields if requested
+        items = result["items"]
+        if minimal:
+            items = [
+                {
+                    "id": item["id"],
+                    "provider": item.get("provider", ""),
+                    "label": item.get("label", ""),
+                    "description": item.get("description", ""),
+                    "group": item.get("group", ""),
+                    "iconUrl": item.get("iconUrl", ""),
+                    "tags": item.get("tags", []),
+                }
+                for item in items
+            ]
+
         return ComponentsResponse(
-            items=result["items"],
-            count=result["count"],
+            items=items,
+            count=len(items),
             lastEvaluatedKey=result.get("lastEvaluatedKey"),
         )
 
@@ -124,7 +144,7 @@ async def get_components(
         print(f"Error in get_components: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error fetching components: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/search", response_model=ComponentsResponse)
@@ -154,7 +174,7 @@ async def search_components(
         print(f"Error in search_components: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error searching components: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/providers", response_model=ProvidersResponse)
@@ -174,7 +194,7 @@ async def get_providers():
         print(f"Error in get_providers: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error fetching providers: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/categories", response_model=CategoriesResponse)
@@ -194,7 +214,7 @@ async def get_categories():
         print(f"Error in get_categories: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error fetching categories: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/{component_id}")
@@ -224,7 +244,7 @@ async def get_component(component_id: str):
         print(f"Error in get_component: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error fetching component: {str(e)}"
-        )
+        ) from e
 
 
 @router.post("/{component_id}/usage", response_model=UsageResponse)
@@ -259,7 +279,7 @@ async def track_usage(component_id: str):
         raise
     except Exception as e:
         print(f"Error in track_usage: {e}")
-        raise HTTPException(status_code=500, detail=f"Error tracking usage: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error tracking usage: {str(e)}") from e
 
 
 def _decode_pagination_key(encoded_key: str) -> dict:
