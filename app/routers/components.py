@@ -10,14 +10,12 @@ from pydantic import BaseModel, Field
 from app.services.components_service import components_service
 
 
-router = APIRouter(
-    prefix="/api/components",
-    tags=["components"]
-)
+router = APIRouter(prefix="/api/components", tags=["components"])
 
 
 class ComponentsResponse(BaseModel):
     """Response model for component queries"""
+
     items: list
     count: int
     lastEvaluatedKey: Optional[dict] = None
@@ -25,6 +23,7 @@ class ComponentsResponse(BaseModel):
 
 class UsageResponse(BaseModel):
     """Response model for usage tracking"""
+
     success: bool
     usageCount: int
     message: str
@@ -32,26 +31,36 @@ class UsageResponse(BaseModel):
 
 class ProvidersResponse(BaseModel):
     """Response model for providers list"""
+
     providers: list[str]
     count: int
 
 
 class CategoriesResponse(BaseModel):
     """Response model for categories list"""
+
     categories: list[str]
     count: int
 
 
 @router.get("", response_model=ComponentsResponse)
 async def get_components(
-    provider: Optional[str] = Query(None, description="Filter by provider (aws, azure, gcp, etc.)"),
-    category: Optional[str] = Query(None, description="Filter by category (storage, compute, etc.)"),
-    limit: int = Query(100, ge=1, le=500, description="Maximum number of items to return"),
-    lastEvaluatedKey: Optional[str] = Query(None, description="Pagination key (base64 encoded)")
+    provider: Optional[str] = Query(
+        None, description="Filter by provider (aws, azure, gcp, etc.)"
+    ),
+    category: Optional[str] = Query(
+        None, description="Filter by category (storage, compute, etc.)"
+    ),
+    limit: int = Query(
+        100, ge=1, le=500, description="Maximum number of items to return"
+    ),
+    lastEvaluatedKey: Optional[str] = Query(
+        None, description="Pagination key (base64 encoded)"
+    ),
 ):
     """
     Get components with optional filtering by provider and/or category
-    
+
     Examples:
     - GET /api/components - Get all components
     - GET /api/components?provider=aws - Get all AWS components
@@ -65,14 +74,22 @@ async def get_components(
             result = components_service.get_components_by_provider(
                 provider=provider,
                 limit=limit,
-                last_evaluated_key=_decode_pagination_key(lastEvaluatedKey) if lastEvaluatedKey else None
+                last_evaluated_key=(
+                    _decode_pagination_key(lastEvaluatedKey)
+                    if lastEvaluatedKey
+                    else None
+                ),
             )
         elif category and not provider:
             # Query by category (uses GSI)
             result = components_service.get_components_by_category(
                 category=category,
                 limit=limit,
-                last_evaluated_key=_decode_pagination_key(lastEvaluatedKey) if lastEvaluatedKey else None
+                last_evaluated_key=(
+                    _decode_pagination_key(lastEvaluatedKey)
+                    if lastEvaluatedKey
+                    else None
+                ),
             )
         elif provider and category:
             # Query by provider with category filter
@@ -80,24 +97,34 @@ async def get_components(
                 provider=provider,
                 category=category,
                 limit=limit,
-                last_evaluated_key=_decode_pagination_key(lastEvaluatedKey) if lastEvaluatedKey else None
+                last_evaluated_key=(
+                    _decode_pagination_key(lastEvaluatedKey)
+                    if lastEvaluatedKey
+                    else None
+                ),
             )
         else:
             # Get all components (scan)
             result = components_service.get_all_components(
                 limit=limit,
-                last_evaluated_key=_decode_pagination_key(lastEvaluatedKey) if lastEvaluatedKey else None
+                last_evaluated_key=(
+                    _decode_pagination_key(lastEvaluatedKey)
+                    if lastEvaluatedKey
+                    else None
+                ),
             )
 
         return ComponentsResponse(
-            items=result['items'],
-            count=result['count'],
-            lastEvaluatedKey=result.get('lastEvaluatedKey')
+            items=result["items"],
+            count=result["count"],
+            lastEvaluatedKey=result.get("lastEvaluatedKey"),
         )
 
     except Exception as e:
         print(f"Error in get_components: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching components: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching components: {str(e)}"
+        )
 
 
 @router.get("/search", response_model=ComponentsResponse)
@@ -105,109 +132,109 @@ async def search_components(
     search: str = Query(..., min_length=1, description="Search term"),
     provider: Optional[str] = Query(None, description="Filter by provider"),
     category: Optional[str] = Query(None, description="Filter by category"),
-    limit: int = Query(100, ge=1, le=500, description="Maximum number of items to return")
+    limit: int = Query(
+        100, ge=1, le=500, description="Maximum number of items to return"
+    ),
 ):
     """
     Search components by name, description, or tags
-    
+
     Examples:
     - GET /api/components/search?search=s3 - Search for "s3"
     - GET /api/components/search?search=storage&provider=aws - Search AWS storage
     """
     try:
         result = components_service.search_components(
-            search_term=search,
-            provider=provider,
-            category=category,
-            limit=limit
+            search_term=search, provider=provider, category=category, limit=limit
         )
 
-        return ComponentsResponse(
-            items=result['items'],
-            count=result['count']
-        )
+        return ComponentsResponse(items=result["items"], count=result["count"])
 
     except Exception as e:
         print(f"Error in search_components: {e}")
-        raise HTTPException(status_code=500, detail=f"Error searching components: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error searching components: {str(e)}"
+        )
 
 
 @router.get("/providers", response_model=ProvidersResponse)
 async def get_providers():
     """
     Get list of all available providers
-    
+
     Returns:
         List of provider names (aws, azure, gcp, kubernetes, etc.)
     """
     try:
         providers = components_service.get_providers()
-        
-        return ProvidersResponse(
-            providers=providers,
-            count=len(providers)
-        )
+
+        return ProvidersResponse(providers=providers, count=len(providers))
 
     except Exception as e:
         print(f"Error in get_providers: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching providers: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching providers: {str(e)}"
+        )
 
 
 @router.get("/categories", response_model=CategoriesResponse)
 async def get_categories():
     """
     Get list of all available categories
-    
+
     Returns:
         List of category names (storage, compute, database, etc.)
     """
     try:
         categories = components_service.get_categories()
-        
-        return CategoriesResponse(
-            categories=categories,
-            count=len(categories)
-        )
+
+        return CategoriesResponse(categories=categories, count=len(categories))
 
     except Exception as e:
         print(f"Error in get_categories: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching categories: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching categories: {str(e)}"
+        )
 
 
 @router.get("/{component_id}")
 async def get_component(component_id: str):
     """
     Get a specific component by ID
-    
+
     Args:
         component_id: Component ID
-        
+
     Returns:
         Component data
     """
     try:
         component = components_service.get_component_by_id(component_id)
-        
+
         if not component:
-            raise HTTPException(status_code=404, detail=f"Component '{component_id}' not found")
-        
+            raise HTTPException(
+                status_code=404, detail=f"Component '{component_id}' not found"
+            )
+
         return component
 
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error in get_component: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching component: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching component: {str(e)}"
+        )
 
 
 @router.post("/{component_id}/usage", response_model=UsageResponse)
 async def track_usage(component_id: str):
     """
     Track component usage (increment usage count)
-    
+
     Args:
         component_id: Component ID
-        
+
     Returns:
         Updated usage count
     """
@@ -215,15 +242,17 @@ async def track_usage(component_id: str):
         # First check if component exists
         component = components_service.get_component_by_id(component_id)
         if not component:
-            raise HTTPException(status_code=404, detail=f"Component '{component_id}' not found")
-        
+            raise HTTPException(
+                status_code=404, detail=f"Component '{component_id}' not found"
+            )
+
         # Increment usage count
         updated_component = components_service.increment_usage_count(component_id)
-        
+
         return UsageResponse(
             success=True,
-            usageCount=updated_component.get('usageCount', 1),
-            message="Usage tracked successfully"
+            usageCount=updated_component.get("usageCount", 1),
+            message="Usage tracked successfully",
         )
 
     except HTTPException:
@@ -236,18 +265,18 @@ async def track_usage(component_id: str):
 def _decode_pagination_key(encoded_key: str) -> dict:
     """
     Decode base64 encoded pagination key
-    
+
     Args:
         encoded_key: Base64 encoded JSON string
-        
+
     Returns:
         Decoded dictionary
     """
     import base64
     import json
-    
+
     try:
-        decoded = base64.b64decode(encoded_key).decode('utf-8')
+        decoded = base64.b64decode(encoded_key).decode("utf-8")
         return json.loads(decoded)
     except Exception as e:
         print(f"Error decoding pagination key: {e}")

@@ -14,13 +14,15 @@ from app.routers.auth import get_current_user
 router = APIRouter()
 
 
-@router.post("/attempts", response_model=AttemptResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/attempts", response_model=AttemptResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_or_update_attempt(
     request: AttemptCreate, current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """Create or update a problem attempt (requires authentication)."""
     user_id = current_user["user_id"]
-    
+
     print(f"Received attempt request - lastAssessment: {request.lastAssessment}")
 
     attempt = dynamodb_service.create_or_update_attempt(

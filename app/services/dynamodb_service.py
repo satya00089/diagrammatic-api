@@ -614,16 +614,16 @@ class DynamoDBService:
         try:
             # Get existing attempt to preserve assessment count
             existing_attempt = self.get_attempt_by_problem(user_id, problem_id)
-            
+
             now = datetime.now(timezone.utc).isoformat()
-            
+
             # Convert floats to Decimal for DynamoDB
             nodes_decimal = convert_floats_to_decimal(nodes)
             edges_decimal = convert_floats_to_decimal(edges)
             assessment_decimal = (
                 convert_floats_to_decimal(last_assessment) if last_assessment else None
             )
-            
+
             # Increment assessment count if new assessment provided
             assessment_count = 0
             preserved_assessment = None
@@ -633,7 +633,7 @@ class DynamoDBService:
             if last_assessment:
                 assessment_count += 1
                 preserved_assessment = assessment_decimal
-            
+
             item: Dict[str, Any] = {
                 "userId": user_id,
                 "problemId": problem_id,
@@ -648,15 +648,15 @@ class DynamoDBService:
                 "updatedAt": now,
                 "lastAttemptedAt": now,
             }
-            
+
             # Only set createdAt for new attempts
             if not existing_attempt:
                 item["createdAt"] = now
             else:
                 item["createdAt"] = existing_attempt.createdAt
-            
+
             self.attempts_table.put_item(Item=item)
-            
+
             return AttemptResponse(
                 id=f"{user_id}#{problem_id}",  # Composite ID for frontend
                 userId=user_id,
@@ -677,7 +677,6 @@ class DynamoDBService:
             print(f"Error creating/updating attempt: {e}")
             raise
 
-
     def get_attempt_by_problem(
         self, user_id: str, problem_id: str
     ) -> Optional[AttemptResponse]:
@@ -686,18 +685,22 @@ class DynamoDBService:
             response = self.attempts_table.get_item(
                 Key={"userId": user_id, "problemId": problem_id}
             )
-            
+
             item = response.get("Item")
             if item:
-                print(f"Retrieved item from DynamoDB: lastAssessment = {item.get('lastAssessment')}")
+                print(
+                    f"Retrieved item from DynamoDB: lastAssessment = {item.get('lastAssessment')}"
+                )
                 item_float: Dict[str, Any] = convert_decimal_to_float(item)
-                print(f"After decimal conversion: lastAssessment = {item_float.get('lastAssessment')}")
+                print(
+                    f"After decimal conversion: lastAssessment = {item_float.get('lastAssessment')}"
+                )
                 # Add composite ID for frontend compatibility
                 item_float["id"] = f"{user_id}#{problem_id}"
                 result = AttemptResponse(**item_float)
                 print(f"AttemptResponse: lastAssessment = {result.lastAssessment}")
                 return result
-            
+
             return None
         except ClientError as e:
             print(f"Error getting attempt: {e}")
