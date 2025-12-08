@@ -18,16 +18,16 @@ from app.models.recommendation_models import (
 def build_recommendation_prompt(request: RecommendationRequest) -> str:
     """
     Build a comprehensive prompt for AI recommendation generation.
-    
+
     Focus on HIGH PRECISION by:
     1. Providing clear, detailed context
     2. Specifying strict relevance criteria
     3. Requesting confidence scores
     4. Emphasizing quality over quantity
-    
+
     Args:
         request: The recommendation request with full context
-        
+
     Returns:
         A well-structured prompt for the AI model
     """
@@ -40,7 +40,7 @@ def build_recommendation_prompt(request: RecommendationRequest) -> str:
         _build_output_format_section(request),
         _build_precision_guidelines_section(),
     ]
-    
+
     return "\n\n".join(filter(None, sections))
 
 
@@ -62,7 +62,7 @@ def _build_user_intent_section(request: RecommendationRequest) -> str:
     if not request.user_intent:
         return """USER INTENT: Not explicitly stated (blank canvas or free design mode)
 ⚠️ Without clear intent, be EXTRA conservative - only suggest foundational/universal components."""
-    
+
     intent = request.user_intent
     return f"""USER INTENT:
 Title: "{intent.title}"
@@ -74,20 +74,20 @@ Description: "{intent.description or 'Not provided'}"
 def _build_canvas_state_section(request: RecommendationRequest) -> str:
     """Build section describing current canvas state."""
     ctx = request.canvas_context
-    
+
     if ctx.is_empty:
         return """CANVAS STATE: Empty (0 components, 0 connections)
 💡 User is just starting - suggest foundational components that align with their intent."""
-    
+
     # Calculate design maturity indicators
     avg_connections_per_node = ctx.edge_count / max(ctx.node_count, 1)
-    
+
     maturity_level = "early stage"
     if ctx.node_count > 10:
         maturity_level = "advanced"
     elif ctx.node_count > 5:
         maturity_level = "intermediate"
-    
+
     return f"""CANVAS STATE: {maturity_level.title()} Design
 - Components: {ctx.node_count}
 - Connections: {ctx.edge_count}
@@ -101,29 +101,31 @@ def _build_component_details_section(request: RecommendationRequest) -> str:
     """Build section with detailed component information for pattern detection."""
     if not request.components:
         return ""
-    
+
     # Group components by type for analysis
     components_by_type = {}
     undocumented_components = []
-    
+
     for comp in request.components:
         comp_type = comp.type
         components_by_type[comp_type] = components_by_type.get(comp_type, 0) + 1
-        
+
         if not comp.has_description:
             undocumented_components.append(comp.label)
-    
+
     # Build detailed summary
     details = ["DETAILED COMPONENT ANALYSIS:"]
     details.append("Component Type Distribution:")
     for comp_type, count in sorted(components_by_type.items(), key=lambda x: -x[1]):
         details.append(f"  - {comp_type}: {count}")
-    
+
     if undocumented_components:
-        details.append(f"\n⚠️ Components Missing Descriptions: {', '.join(undocumented_components[:5])}")
+        details.append(
+            f"\n⚠️ Components Missing Descriptions: {', '.join(undocumented_components[:5])}"
+        )
         if len(undocumented_components) > 5:
             details.append(f"   ...and {len(undocumented_components) - 5} more")
-    
+
     return "\n".join(details)
 
 
@@ -131,14 +133,14 @@ def _build_connection_details_section(request: RecommendationRequest) -> str:
     """Build section analyzing connections for architectural patterns."""
     if not request.connections:
         return "CONNECTIONS: None defined yet\n⚠️ If design has multiple components, suggest connecting them with clear labels."
-    
+
     unlabeled_count = sum(1 for conn in request.connections if not conn.has_label)
-    
+
     details = [f"CONNECTIONS: {len(request.connections)} total"]
-    
+
     if unlabeled_count > 0:
         details.append(f"⚠️ {unlabeled_count} connections lack descriptive labels")
-    
+
     return "\n".join(details)
 
 
@@ -218,7 +220,7 @@ Your recommendations should be:
 def get_fallback_recommendations() -> dict:
     """
     Get fallback recommendations when AI is unavailable.
-    
+
     These are conservative, high-precision suggestions for common scenarios.
     """
     return {
@@ -232,7 +234,7 @@ def get_fallback_recommendations() -> dict:
                 "priority": 8,
                 "confidence": 0.7,
                 "action_type": "info-only",
-                "reasoning": "Empty canvas - suggesting foundational start"
+                "reasoning": "Empty canvas - suggesting foundational start",
             },
             {
                 "id": "fallback-document",
@@ -243,8 +245,8 @@ def get_fallback_recommendations() -> dict:
                 "priority": 7,
                 "confidence": 0.8,
                 "action_type": "info-only",
-                "reasoning": "Good documentation improves design communication"
-            }
+                "reasoning": "Good documentation improves design communication",
+            },
         ],
-        "context_summary": "AI service unavailable - showing fallback suggestions"
+        "context_summary": "AI service unavailable - showing fallback suggestions",
     }

@@ -16,9 +16,7 @@ class AttemptCreate(BaseModel):
     elapsedTime: int = Field(
         default=0, description="Time spent on the problem in seconds"
     )
-    lastAssessment: Optional[dict] = Field(
-        None, description="Latest assessment result"
-    )
+    lastAssessment: Optional[dict] = Field(None, description="Latest assessment result")
 
 
 class AttemptUpdate(BaseModel):
@@ -45,20 +43,12 @@ class AttemptResponse(BaseModel):
     edges: List[Any] = Field(
         default_factory=list, description="Canvas edges from attempt"
     )
-    elapsedTime: int = Field(
-        default=0, description="Total time spent in seconds"
-    )
-    lastAssessment: Optional[dict] = Field(
-        None, description="Latest assessment result"
-    )
-    assessmentCount: int = Field(
-        default=0, description="Number of assessments run"
-    )
+    elapsedTime: int = Field(default=0, description="Total time spent in seconds")
+    lastAssessment: Optional[dict] = Field(None, description="Latest assessment result")
+    assessmentCount: int = Field(default=0, description="Number of assessments run")
     createdAt: str = Field(..., description="When the attempt was first created")
     updatedAt: str = Field(..., description="When the attempt was last updated")
-    lastAttemptedAt: str = Field(
-        ..., description="When the problem was last worked on"
-    )
+    lastAttemptedAt: str = Field(..., description="When the problem was last worked on")
 
     class Config:
         """Pydantic config."""

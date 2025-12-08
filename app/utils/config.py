@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     dynamodb_attempts_table: str = Field(
         "diagrammatic_problem_attempts", validation_alias="DYNAMODB_ATTEMPTS_TABLE"
     )
+    components_table_name: str = Field(
+        "diagrammatic_components", validation_alias="COMPONENTS_TABLE_NAME"
+    )
 
     class Config:
         """Pydantic configuration to load from .env file."""

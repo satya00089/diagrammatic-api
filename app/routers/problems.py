@@ -91,7 +91,7 @@ async def get_problem_by_id(problem_id: str) -> ProblemDetail:
 
 @router.get("/problems/attempted", response_model=List[str])
 async def get_attempted_problems(
-    current_user: Dict[str, Any] = Depends(get_current_user)
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> List[str]:
     """
     Get list of problem IDs that the user has attempted.
@@ -102,10 +102,10 @@ async def get_attempted_problems(
     try:
         user_id = current_user["user_id"]
         attempts = dynamodb_service.get_user_attempts(user_id)
-        
+
         # Extract just the problem IDs
         problem_ids = [attempt.problemId for attempt in attempts]
-        
+
         return problem_ids
     except Exception as e:
         logger.error("Error in get_attempted_problems: %s", e)
