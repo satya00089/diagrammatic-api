@@ -80,6 +80,10 @@ class AIRecommendationService:
         """
         start_time = time.time()
 
+        # If force_refresh is False, return fallback recommendations to avoid LLM costs
+        if not getattr(request, 'force_refresh', False):
+            return self.get_fallback_recommendations(request, "Using cached recommendations")
+
         try:
             # Build intelligent prompt
             prompt = build_recommendation_prompt(request)
