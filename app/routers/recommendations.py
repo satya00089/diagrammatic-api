@@ -5,13 +5,14 @@ Provides REST API endpoints for getting context-aware design recommendations.
 Includes proper error handling, validation, and rate limiting.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import JSONResponse
 
 from app.models.recommendation_models import (
     RecommendationRequest,
     RecommendationResponse,
 )
+from app.routers.auth import get_current_user
 from app.services.ai_recommendation_service import create_recommendation_service
 
 
@@ -25,6 +26,16 @@ router = APIRouter()
     summary="Get AI-powered design recommendations",
     description="""
     Get context-aware recommendations for improving system design diagrams.
+    
+    **Requirements:**
+    - Minimum 5 nodes on the canvas
+    - User must be authenticated
+    - Use `force_refresh=true` to trigger LLM analysis (increases API costs)
+    
+    **Behavior:**
+    - By default returns rule-based recommendations (no LLM costs)
+    - Set `force_refresh=true` to get AI-powered analysis from LLM
+    - LLM calls are rate-limited and should be used sparingly
     
     This endpoint uses AI to analyze the current canvas state, user intent,
     and design patterns to provide highly relevant, actionable suggestions.
@@ -84,7 +95,10 @@ router = APIRouter()
     },
     tags=["Recommendations"],
 )
-async def get_recommendations(request: RecommendationRequest) -> RecommendationResponse:
+async def get_recommendations(
+    request: RecommendationRequest,
+    current_user: dict = Depends(get_current_user)
+) -> RecommendationResponse:
     """
     Get AI-powered recommendations for system design improvement.
 
@@ -106,10 +120,17 @@ async def get_recommendations(request: RecommendationRequest) -> RecommendationR
                 detail="Invalid canvas state: node_count cannot be negative",
             )
 
+        # Minimum 5 nodes requirement for recommendations
+        if request.canvas_context.node_count < 5:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Minimum 5 nodes required for recommendations. Add more components to your diagram.",
+            )
+
         # Create service instance (can be singleton in production)
         service = create_recommendation_service()
 
-        # Get recommendations
+        # Get recommendations - only authenticated users can get AI-powered recommendations
         response = await service.get_recommendations(request)
 
         return response

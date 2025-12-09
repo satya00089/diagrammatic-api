@@ -85,6 +85,9 @@ class RecommendationRequest(BaseModel):
     max_suggestions: int = Field(
         default=5, ge=1, le=10, description="Maximum number of suggestions to return"
     )
+    force_refresh: bool = Field(
+        default=False, description="Force fresh LLM call instead of using cached results"
+    )
 
     @field_validator("max_suggestions")
     @classmethod
