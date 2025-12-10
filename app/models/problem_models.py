@@ -14,6 +14,7 @@ class ProblemSummary(BaseModel):
     description: str
     difficulty: str
     category: str
+    domain: Optional[str] = None
     estimatedTime: str = Field(alias="estimated_time")
     tags: List[str] = []
     companies: List[str] = []
