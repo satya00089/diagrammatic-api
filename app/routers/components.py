@@ -130,6 +130,7 @@ async def get_components(
                     "group": item.get("group", ""),
                     "iconUrl": item.get("iconUrl", ""),
                     "tags": item.get("tags", []),
+                    "nodeType": item.get("nodeType", "custom"),
                 }
                 for item in items
             ]
