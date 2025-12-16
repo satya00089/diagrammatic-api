@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
-from app.models.dynamodb import dynamodb_client
+from app.services.dynamodb_service import dynamodb_service
 from app.models.user import User, get_current_user
 from boto3.dynamodb.conditions import Key
 
