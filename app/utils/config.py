@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     dynamodb_attempts_table: str = Field(
         "diagrammatic_problem_attempts", validation_alias="DYNAMODB_ATTEMPTS_TABLE"
     )
+    # Frontend URL (used to build public solution links)
+    frontend_url: str = Field(
+        "https://diagrammatic.next-zen.dev",
+        validation_alias="FRONTEND_URL",
+    )
+
     components_table_name: str = Field(
         "diagrammatic_components", validation_alias="COMPONENTS_TABLE_NAME"
     )
