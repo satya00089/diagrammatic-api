@@ -64,8 +64,8 @@ async def publish_attempt(
         )
 
     settings = get_settings()
-    base = getattr(settings, "frontend_url", "https://satya00089.github.io/diagrammatic")
-    public_url = f"{base}/#/solutions/{attempt_id}"
+    base = getattr(settings, "frontend_url", "https://diagrammatic.next-zen.dev").rstrip("/")
+    public_url = f"{base}/solutions/{attempt_id}"
 
     return PublishResponse(
         attemptId=attempt_id,
