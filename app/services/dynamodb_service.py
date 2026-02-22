@@ -13,7 +13,7 @@ from mypy_boto3_dynamodb.service_resource import Table
 from app.utils.config import get_settings
 from app.models.auth_models import User
 from app.models.diagram_models import Diagram, Collaborator, Permission
-from app.models.attempt_models import AttemptResponse
+from app.models.attempt_models import AttemptResponse, PublicSolutionResponse, LeaderboardEntry
 
 settings = get_settings()
 
@@ -655,7 +655,10 @@ class DynamoDBService:
             else:
                 item["createdAt"] = existing_attempt.createdAt
 
-            self.attempts_table.put_item(Item=item)
+            # Ensure the entire item is DynamoDB-safe (float → Decimal).
+            # This catches preserved_assessment which may have floats from a
+            # prior convert_decimal_to_float round-trip on the existing attempt.
+            self.attempts_table.put_item(Item=convert_floats_to_decimal(item))
 
             return AttemptResponse(
                 id=f"{user_id}#{problem_id}",  # Composite ID for frontend
@@ -743,6 +746,142 @@ class DynamoDBService:
             return True
         except ClientError:
             return False
+
+    # ------------------------------------------------------------------
+    # Public sharing
+    # ------------------------------------------------------------------
+
+    def publish_attempt(
+        self,
+        user_id: str,
+        problem_id: str,
+        author_name: str,
+        author_picture: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Mark an attempt as public and stamp author metadata."""
+        try:
+            existing = self.get_attempt_by_problem(user_id, problem_id)
+            if not existing:
+                return None
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            self.attempts_table.update_item(
+                Key={"userId": user_id, "problemId": problem_id},
+                UpdateExpression=(
+                    "SET isPublic = :pub, publishedAt = :ts, "
+                    "authorName = :name, authorPicture = :pic, "
+                    "viewCount = if_not_exists(viewCount, :zero)"
+                ),
+                ExpressionAttributeValues={
+                    ":pub": True,
+                    ":ts": now,
+                    ":name": author_name,
+                    ":pic": author_picture or "",
+                    ":zero": 0,
+                },
+            )
+            return {"publishedAt": now}
+        except ClientError as e:
+            print(f"Error publishing attempt: {e}")
+            return None
+
+    def unpublish_attempt(self, user_id: str, problem_id: str) -> bool:
+        """Remove public visibility from an attempt."""
+        try:
+            self.attempts_table.update_item(
+                Key={"userId": user_id, "problemId": problem_id},
+                UpdateExpression="SET isPublic = :f",
+                ExpressionAttributeValues={":f": False},
+            )
+            return True
+        except ClientError as e:
+            print(f"Error unpublishing attempt: {e}")
+            return False
+
+    def get_public_solution(
+        self, user_id: str, problem_id: str
+    ) -> Optional[PublicSolutionResponse]:
+        """Fetch a public solution and increment its view count atomically."""
+        try:
+            # Increment view count and return the updated item
+            response = self.attempts_table.update_item(
+                Key={"userId": user_id, "problemId": problem_id},
+                UpdateExpression="ADD viewCount :inc",
+                ConditionExpression="isPublic = :t",
+                ExpressionAttributeValues={":inc": 1, ":t": True},
+                ReturnValues="ALL_NEW",
+            )
+            item = response.get("Attributes")
+            if not item:
+                return None
+
+            item_float: Dict[str, Any] = convert_decimal_to_float(item)
+            attempt_id = f"{user_id}#{problem_id}"
+
+            assessment = item_float.get("lastAssessment")
+
+            return PublicSolutionResponse(
+                id=attempt_id,
+                problemId=problem_id,
+                title=item_float.get("title", ""),
+                difficulty=item_float.get("difficulty"),
+                category=item_float.get("category"),
+                nodes=item_float.get("nodes", []),
+                edges=item_float.get("edges", []),
+                lastAssessment=assessment,
+                authorName=item_float.get("authorName"),
+                authorPicture=item_float.get("authorPicture"),
+                publishedAt=item_float.get("publishedAt"),
+                viewCount=int(item_float.get("viewCount", 0)),
+                elapsedTime=int(item_float.get("elapsedTime", 0)),
+            )
+        except ClientError as e:
+            # ConditionExpression failed → not public
+            print(f"get_public_solution error (may not be public): {e}")
+            return None
+
+    def get_problem_leaderboard(
+        self, problem_id: str, limit: int = 10
+    ) -> List[LeaderboardEntry]:
+        """Scan for top public solutions for a problem (sorted by score desc)."""
+        try:
+            # Scan with filter — small dataset per problem, acceptable cost
+            response = self.attempts_table.scan(
+                FilterExpression=(
+                    "problemId = :pid AND isPublic = :t"
+                ),
+                ExpressionAttributeValues={
+                    ":pid": problem_id,
+                    ":t": True,
+                },
+            )
+            items = response.get("Items", [])
+
+            entries = []
+            for item in items:
+                item_float = convert_decimal_to_float(item)
+                assessment = item_float.get("lastAssessment") or {}
+                score = int(assessment.get("score", 0))
+                uid = item_float.get("userId", "")
+                pid = item_float.get("problemId", "")
+                entries.append(
+                    LeaderboardEntry(
+                        attemptId=f"{uid}#{pid}",
+                        authorName=item_float.get("authorName"),
+                        authorPicture=item_float.get("authorPicture"),
+                        score=score,
+                        publishedAt=item_float.get("publishedAt"),
+                        elapsedTime=int(item_float.get("elapsedTime", 0)),
+                    )
+                )
+
+            # Sort by score descending, return top N
+            entries.sort(key=lambda e: e.score, reverse=True)
+            return entries[:limit]
+        except ClientError as e:
+            print(f"Error fetching leaderboard: {e}")
+            return []
 
 
 # Global DynamoDB service instance

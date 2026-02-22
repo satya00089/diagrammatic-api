@@ -1,6 +1,6 @@
 """Models for system design assessment responses."""
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,8 @@ class FeedbackCategory(str, Enum):
     CONSTRAINTS = "constraints"
     COMPONENT_DESCRIPTION = "component_description"
     CONNECTION_REASONING = "connection_reasoning"
+    OBSERVABILITY = "observability"
+    DELIVERABILITY = "deliverability"
 
 
 class ValidationFeedback(BaseModel):
@@ -47,6 +49,8 @@ class ScoreBreakdown(BaseModel):
     maintainability: int = Field(ge=0, le=100)
     performance: Optional[int] = Field(default=None, ge=0, le=100)
     cost_efficiency: Optional[int] = Field(default=None, ge=0, le=100)
+    observability: Optional[int] = Field(default=None, ge=0, le=100)
+    deliverability: Optional[int] = Field(default=None, ge=0, le=100)
     requirements_alignment: Optional[int] = Field(default=None, ge=0, le=100)
     constraint_compliance: Optional[int] = Field(default=None, ge=0, le=100)
     component_justification: Optional[int] = Field(default=None, ge=0, le=100)
@@ -66,5 +70,7 @@ class AssessmentResponse(BaseModel):
     missing_descriptions: Optional[List[str]] = None
     unclear_connections: Optional[List[str]] = None
     suggestions: List[str]
+    detailed_analysis: Optional[Dict[str, str]] = None
+    interview_questions: Optional[List[str]] = None
     assessment_id: Optional[str] = None
     processing_time_ms: Optional[int] = None

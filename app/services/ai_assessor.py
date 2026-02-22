@@ -2,6 +2,7 @@
 
 from typing import Dict, Any
 import json
+import re
 import time
 
 from openai import AsyncOpenAI
@@ -23,9 +24,49 @@ class AIAssessorService:
         self.settings = get_settings()
         self.client = AsyncOpenAI(api_key=self.settings.openai_api_key)
 
+    # ------------------------------------------------------------------
+    # Coverage helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _has_meaningful_description(text: str | None) -> bool:
+        """Return True if text has at least 10 real characters after stripping HTML."""
+        if not text:
+            return False
+        stripped = re.sub(r"<[^>]+>", "", text).strip()
+        return len(stripped) >= 10
+
+    def _compute_coverage(self, request: AssessmentRequest) -> Dict[str, Any]:
+        """Compute description coverage for components and connections."""
+        total_comps = len(request.components)
+        comps_with_desc = sum(
+            1 for c in request.components
+            if self._has_meaningful_description(
+                (c.properties or {}).get("description", "")
+            )
+        )
+        total_conns = len(request.connections or [])
+        conns_with_desc = sum(
+            1 for conn in (request.connections or [])
+            if self._has_meaningful_description(conn.description)
+        )
+        return {
+            "comp_pct": (comps_with_desc / total_comps * 100) if total_comps else 100,
+            "conn_pct": (conns_with_desc / total_conns * 100) if total_conns else 100,
+            "comp_ok": (comps_with_desc / total_comps >= 0.70) if total_comps else True,
+            "conn_ok": (conns_with_desc / total_conns >= 0.70) if total_conns else True,
+        }
+
+    # ------------------------------------------------------------------
+    # Main assessment entry-point
+    # ------------------------------------------------------------------
+
     async def assess_design(self, request: AssessmentRequest) -> AssessmentResponse:
         """Assess the system design using AI and fallback to rule-based if needed."""
         start_time = time.time()
+
+        # Pre-compute coverage so we can post-filter AI feedback
+        coverage = self._compute_coverage(request)
 
         try:
             # Generate structured prompt
@@ -37,12 +78,18 @@ class AIAssessorService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a strict senior system architect and technical lead with 15+ years of experience in distributed systems, microservices, and cloud architecture. You have high standards and provide tough but fair assessments. Be critical of incomplete designs, missing descriptions, and poor architectural justification. Only award high scores (70+) when designs demonstrate clear understanding and proper documentation. Penalize missing component descriptions heavily.",
+                        "content": (
+                            "You are a senior system architect and technical lead with 15+ years of experience "
+                            "in distributed systems, microservices, and cloud architecture. "
+                            "You provide tough but fair assessments. "
+                            "When the design meets the 70% description-coverage threshold stated in the prompt, "
+                            "do not penalise missing descriptions — focus on architecture quality instead."
+                        ),
                     },
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
-                max_tokens=2000,
+                max_tokens=4000,
                 response_format={"type": "json_object"},
             )
 
@@ -51,6 +98,9 @@ class AIAssessorService:
 
             # Transform to response model
             assessment = self._transform_ai_response(ai_result)
+
+            # Post-process: suppress description feedback when coverage threshold is met
+            assessment = self._filter_description_feedback(assessment, coverage)
 
             # Calculate processing time
             processing_time = int((time.time() - start_time) * 1000)
@@ -62,31 +112,96 @@ class AIAssessorService:
             # Fallback to rule-based assessment
             return self._fallback_assessment(request, str(e))
 
+    # ------------------------------------------------------------------
+    # Post-processing
+    # ------------------------------------------------------------------
+
+    _DESC_KEYWORDS = (
+        "description", "no description", "missing description", "undefined purpose",
+        "unclear purpose", "purpose unclear", "lacks description", "lacks detail",
+        "component purpose", "add descriptions", "provide descriptions",
+        "component documentation", "component_justification",
+    )
+    _CONN_KEYWORDS = (
+        "connection description", "connection label", "connection reasoning",
+        "connection clarity", "unclear connection", "missing connection description",
+        "add descriptions to connection", "connection lacks",
+    )
+
+    def _filter_description_feedback(
+        self, assessment: AssessmentResponse, coverage: Dict[str, Any]
+    ) -> AssessmentResponse:
+        """Remove or demote description-related feedback when coverage ≥ 70%."""
+        comp_ok: bool = coverage["comp_ok"]
+        conn_ok: bool = coverage["conn_ok"]
+
+        if not (comp_ok or conn_ok):
+            return assessment  # nothing to suppress
+
+        def _keep_feedback(fb: ValidationFeedback) -> bool:
+            lower = fb.message.lower()
+            if comp_ok:
+                if fb.category in ("component_description",):
+                    return False
+                if any(kw in lower for kw in self._DESC_KEYWORDS):
+                    return False
+            if conn_ok:
+                if fb.category in ("connection_reasoning",):
+                    return False
+                if any(kw in lower for kw in self._CONN_KEYWORDS):
+                    return False
+            return True
+
+        def _keep_text(msg: str) -> bool:
+            lower = msg.lower()
+            if comp_ok and any(kw in lower for kw in self._DESC_KEYWORDS):
+                return False
+            if conn_ok and any(kw in lower for kw in self._CONN_KEYWORDS):
+                return False
+            return True
+
+        assessment.feedback = [fb for fb in assessment.feedback if _keep_feedback(fb)]
+        assessment.improvements = [i for i in assessment.improvements if _keep_text(i)]
+        if comp_ok:
+            assessment.missing_descriptions = []
+        if conn_ok:
+            assessment.unclear_connections = []
+        return assessment
+
+    # Scoring weights by dimension importance.
+    # Architecture-critical dims carry more weight than documentation dims.
+    _SCORE_WEIGHTS: Dict[str, float] = {
+        "scalability": 2.0,
+        "reliability": 2.0,
+        "security": 2.0,
+        "maintainability": 2.0,
+        "performance": 1.5,
+        "observability": 1.5,
+        "deliverability": 1.5,
+        "cost_efficiency": 1.0,
+        "requirements_alignment": 1.0,
+        "constraint_compliance": 1.0,
+        "component_justification": 0.75,
+        "connection_clarity": 0.75,
+    }
+
     def _transform_ai_response(self, ai_result: Dict[str, Any]) -> AssessmentResponse:
         # Transform AI JSON response to Pydantic model
         scores = ScoreBreakdown(**ai_result.get("scores", {}))
 
         feedback = [ValidationFeedback(**fb) for fb in ai_result.get("feedback", [])]
 
-        # Calculate overall score including new criteria if available
-        core_scores = [
-            scores.scalability,
-            scores.reliability,
-            scores.security,
-            scores.maintainability,
-        ]
+        # Weighted average: architecture-critical dims outweigh documentation dims
+        weighted_sum = 0.0
+        total_weight = 0.0
+        for field, weight in self._SCORE_WEIGHTS.items():
+            val = getattr(scores, field, None)
+            if val is not None:
+                weighted_sum += val * weight
+                total_weight += weight
 
-        # Add optional scores if they exist and weight them appropriately
-        if scores.requirements_alignment is not None:
-            core_scores.append(scores.requirements_alignment)
-        if scores.constraint_compliance is not None:
-            core_scores.append(scores.constraint_compliance)
-        if scores.component_justification is not None:
-            core_scores.append(scores.component_justification)
-        if scores.connection_clarity is not None:
-            core_scores.append(scores.connection_clarity)
-
-        overall_score = sum(core_scores) // len(core_scores)
+        overall_score = round(weighted_sum / total_weight) if total_weight else 0
+        overall_score = max(0, min(100, overall_score))
 
         return AssessmentResponse(
             is_valid=overall_score >= 50,
@@ -99,6 +214,8 @@ class AIAssessorService:
             missing_descriptions=ai_result.get("missing_descriptions", []),
             unclear_connections=ai_result.get("unclear_connections", []),
             suggestions=ai_result.get("suggestions", []),
+            detailed_analysis=ai_result.get("detailed_analysis"),
+            interview_questions=ai_result.get("interview_questions", []),
         )
 
     def _fallback_assessment(
