@@ -104,3 +104,25 @@ class Diagram(BaseModel):
     updatedAt: str
     isPublic: bool = Field(default=False)
     collaborators: List[Collaborator] = Field(default_factory=list)
+
+
+class PublicDiagramResponse(BaseModel):
+    """Response model for a publicly shared free diagram."""
+
+    id: str
+    title: str
+    description: Optional[str] = None
+    nodes: List[Any]
+    edges: List[Any]
+    authorName: Optional[str] = None
+    authorPicture: Optional[str] = None
+    publishedAt: Optional[str] = None
+    viewCount: int = 0
+
+
+class PublishDiagramResponse(BaseModel):
+    """Response returned after publishing a free diagram."""
+
+    diagramId: str
+    publicUrl: str
+    publishedAt: str
