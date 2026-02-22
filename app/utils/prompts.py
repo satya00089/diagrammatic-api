@@ -39,6 +39,10 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
                 conn_desc += f": {conn.label}"
             if conn.type:
                 conn_desc += f" (Type: {conn.type})"
+            if conn.description and conn.description.strip():
+                conn_desc += f"\n  Description: {conn.description}"
+            else:
+                conn_desc += "\n  ⚠️ No description - connection purpose unclear"
             connections_text.append(conn_desc)
         connections_text = "\n".join(connections_text)
     else:
@@ -94,7 +98,7 @@ Rate each aspect from 0-100, considering the problem context, requirements, and 
 
 7. **Component Justification**: Are component purposes clearly explained? Do descriptions provide sufficient detail about why each component is necessary and how it contributes to the solution?
 
-8. **Connection Clarity**: Are the relationships between components well-defined? Do connection labels explain the data flow and interaction patterns?
+8. **Connection Clarity**: Are the relationships between components well-defined? Do connection labels and descriptions explain the data flow, protocols, and interaction patterns? Connections with descriptions should be rewarded; connections missing descriptions should be flagged.
 
 **EVALUATION GUIDELINES:**
 
@@ -109,13 +113,15 @@ Rate each aspect from 0-100, considering the problem context, requirements, and 
 - **SEVERELY PENALIZE** missing connections in complex systems
 - **DEDUCT 20-40 points** from connection_clarity when no connections are defined
 - **DEDUCT points** from scalability and reliability when data flow is unclear
-- Evaluate if connection types and protocols are appropriate
-- Check if data flow and communication patterns are well-justified
+- **DEDUCT 10-20 points** from connection_clarity for connections lacking descriptions — label alone is insufficient
+- Evaluate if connection types, protocols, and descriptions are appropriate and informative
+- Check if data flow, communication patterns, and interaction purpose are well-justified in descriptions
 
 **STRICT SCORING RULES:**
 - Empty explanations should result in scores below 50 for most criteria
 - Missing component descriptions should significantly impact component_justification (0-30 range)
 - No connections should result in very low connection_clarity scores (0-20 range)
+- Connections without descriptions should reduce connection_clarity (cap at 60 without descriptions)
 - Vague or placeholder text should be treated as missing information
 
 **RESPONSE FORMAT:**
