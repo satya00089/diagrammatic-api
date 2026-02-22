@@ -49,8 +49,51 @@ class AttemptResponse(BaseModel):
     createdAt: str = Field(..., description="When the attempt was first created")
     updatedAt: str = Field(..., description="When the attempt was last updated")
     lastAttemptedAt: str = Field(..., description="When the problem was last worked on")
+    # Public sharing fields
+    isPublic: bool = Field(default=False, description="Whether the solution is public")
+    publishedAt: Optional[str] = Field(None, description="When it was published")
+    authorName: Optional[str] = Field(None, description="Display name of the author")
+    authorPicture: Optional[str] = Field(None, description="Avatar URL of the author")
+    viewCount: int = Field(default=0, description="Number of public views")
 
     class Config:
         """Pydantic config."""
 
         from_attributes = True
+
+
+class PublishResponse(BaseModel):
+    """Response model returned after publishing a solution."""
+
+    attemptId: str = Field(..., description="Composite attempt ID")
+    publicUrl: str = Field(..., description="Publicly accessible URL for this solution")
+    publishedAt: str = Field(..., description="Timestamp when published")
+
+
+class PublicSolutionResponse(BaseModel):
+    """Stripped-down public view of a solution (no sensitive user data)."""
+
+    id: str
+    problemId: str
+    title: str
+    difficulty: Optional[str] = None
+    category: Optional[str] = None
+    nodes: List[Any] = Field(default_factory=list)
+    edges: List[Any] = Field(default_factory=list)
+    lastAssessment: Optional[dict] = None
+    authorName: Optional[str] = None
+    authorPicture: Optional[str] = None
+    publishedAt: Optional[str] = None
+    viewCount: int = 0
+    elapsedTime: int = 0
+
+
+class LeaderboardEntry(BaseModel):
+    """Single entry in the problem leaderboard."""
+
+    attemptId: str
+    authorName: Optional[str] = None
+    authorPicture: Optional[str] = None
+    score: int
+    publishedAt: Optional[str] = None
+    elapsedTime: int = 0

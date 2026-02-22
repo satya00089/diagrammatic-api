@@ -46,6 +46,7 @@ class Connection(BaseModel):
     target: str
     label: Optional[str] = None
     type: Optional[str] = None
+    description: Optional[str] = None
 
 
 class ProblemContext(BaseModel):
