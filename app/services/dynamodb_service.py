@@ -12,7 +12,7 @@ from mypy_boto3_dynamodb.service_resource import Table
 
 from app.utils.config import get_settings
 from app.models.auth_models import User
-from app.models.diagram_models import Diagram, Collaborator, Permission
+from app.models.diagram_models import Diagram, Collaborator, Permission, PublicDiagramResponse
 from app.models.attempt_models import AttemptResponse, PublicSolutionResponse, LeaderboardEntry
 
 settings = get_settings()
@@ -882,6 +882,112 @@ class DynamoDBService:
         except ClientError as e:
             print(f"Error fetching leaderboard: {e}")
             return []
+
+
+    # ------------------------------------------------------------------
+    # Free diagram publish / unpublish / public view
+    # ------------------------------------------------------------------
+
+    def publish_diagram(
+        self,
+        user_id: str,
+        diagram_id: str,
+        author_name: str,
+        author_picture: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Mark a free-design diagram as publicly visible."""
+        try:
+            diagram = self.get_diagram(user_id, diagram_id)
+            if not diagram:
+                return None
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            self.diagrams_table.update_item(
+                Key={"userId": user_id, "id": diagram_id},
+                UpdateExpression=(
+                    "SET isPublic = :pub, publishedAt = :ts, "
+                    "authorName = :name, authorPicture = :pic, "
+                    "viewCount = if_not_exists(viewCount, :zero)"
+                ),
+                ExpressionAttributeValues={
+                    ":pub": True,
+                    ":ts": now,
+                    ":name": author_name,
+                    ":pic": author_picture or "",
+                    ":zero": 0,
+                },
+            )
+            return {"publishedAt": now}
+        except ClientError as e:
+            print(f"Error publishing diagram: {e}")
+            return None
+
+    def unpublish_diagram(self, user_id: str, diagram_id: str) -> bool:
+        """Remove public visibility from a free-design diagram."""
+        try:
+            self.diagrams_table.update_item(
+                Key={"userId": user_id, "id": diagram_id},
+                UpdateExpression="SET isPublic = :f",
+                ExpressionAttributeValues={":f": False},
+            )
+            return True
+        except ClientError as e:
+            print(f"Error unpublishing diagram: {e}")
+            return False
+
+    def get_public_diagram(self, diagram_id: str) -> Optional[PublicDiagramResponse]:
+        """Scan for a public diagram by id and increment its view count."""
+        try:
+            # Scan for the diagram with matching id and isPublic = true
+            response = self.diagrams_table.scan(
+                FilterExpression="id = :did AND isPublic = :t",
+                ExpressionAttributeValues={":did": diagram_id, ":t": True},
+            )
+            items = response.get("Items", [])
+
+            # Handle pagination (small public dataset, so unlikely, but safe)
+            while "LastEvaluatedKey" in response:
+                response = self.diagrams_table.scan(
+                    FilterExpression="id = :did AND isPublic = :t",
+                    ExpressionAttributeValues={":did": diagram_id, ":t": True},
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
+                )
+                items.extend(response.get("Items", []))
+
+            if not items:
+                return None
+
+            raw = convert_decimal_to_float(items[0])
+            owner_user_id = raw.get("userId", "")
+
+            # Increment view count
+            try:
+                updated = self.diagrams_table.update_item(
+                    Key={"userId": owner_user_id, "id": diagram_id},
+                    UpdateExpression="ADD viewCount :inc",
+                    ConditionExpression="isPublic = :t",
+                    ExpressionAttributeValues={":inc": 1, ":t": True},
+                    ReturnValues="ALL_NEW",
+                )
+                raw = convert_decimal_to_float(updated.get("Attributes", raw))
+            except ClientError:
+                pass  # view count increment is best-effort
+
+            return PublicDiagramResponse(
+                id=raw.get("id", diagram_id),
+                title=raw.get("title", ""),
+                description=raw.get("description"),
+                nodes=raw.get("nodes", []),
+                edges=raw.get("edges", []),
+                authorName=raw.get("authorName"),
+                authorPicture=raw.get("authorPicture"),
+                publishedAt=raw.get("publishedAt"),
+                viewCount=int(raw.get("viewCount", 0)),
+            )
+        except ClientError as e:
+            print(f"get_public_diagram error: {e}")
+            return None
 
 
 # Global DynamoDB service instance

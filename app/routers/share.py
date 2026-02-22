@@ -1,6 +1,7 @@
 """Router for public solution sharing and leaderboard features."""
 
 from typing import Any, Dict, List
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ from app.models.attempt_models import (
     PublicSolutionResponse,
     PublishResponse,
 )
+from app.models.diagram_models import PublicDiagramResponse, PublishDiagramResponse
 from app.services.dynamodb_service import dynamodb_service
 from app.routers.auth import get_current_user
 from app.utils.config import get_settings
@@ -65,7 +67,7 @@ async def publish_attempt(
 
     settings = get_settings()
     base = getattr(settings, "frontend_url", "https://diagrammatic.next-zen.dev").rstrip("/")
-    public_url = f"{base}/solutions/{attempt_id}"
+    public_url = f"{base}/public/{quote(attempt_id, safe='')}"
 
     return PublishResponse(
         attemptId=attempt_id,
@@ -101,6 +103,76 @@ async def unpublish_attempt(
 
     dynamodb_service.unpublish_attempt(user_id=user_id, problem_id=problem_id)
     return {"message": "Solution unpublished successfully."}
+
+
+# ---------------------------------------------------------------------------
+# Free-design diagram Publish / Unpublish / Public View
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/diagrams/{diagram_id}/publish",
+    response_model=PublishDiagramResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def publish_diagram(
+    diagram_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Make a free-design diagram publicly visible (owner only)."""
+    user_id = current_user["user_id"]
+
+    published = dynamodb_service.publish_diagram(
+        user_id=user_id,
+        diagram_id=diagram_id,
+        author_name=current_user.get("name") or current_user.get("email", "Anonymous"),
+        author_picture=current_user.get("picture"),
+    )
+
+    if not published:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Diagram not found or you are not the owner.",
+        )
+
+    settings = get_settings()
+    base = getattr(settings, "frontend_url", "https://diagrammatic.next-zen.dev").rstrip("/")
+    public_url = f"{base}/public/{diagram_id}"
+
+    return PublishDiagramResponse(
+        diagramId=diagram_id,
+        publicUrl=public_url,
+        publishedAt=published["publishedAt"],
+    )
+
+
+@router.post(
+    "/diagrams/{diagram_id}/unpublish",
+    status_code=status.HTTP_200_OK,
+)
+async def unpublish_diagram(
+    diagram_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Remove a free-design diagram from public view (owner only)."""
+    user_id = current_user["user_id"]
+    dynamodb_service.unpublish_diagram(user_id=user_id, diagram_id=diagram_id)
+    return {"message": "Diagram unpublished successfully."}
+
+
+@router.get(
+    "/public/diagrams/{diagram_id}",
+    response_model=PublicDiagramResponse,
+)
+async def get_public_diagram(diagram_id: str):
+    """Fetch a publicly shared free-design diagram. Increments view count."""
+    diagram = dynamodb_service.get_public_diagram(diagram_id=diagram_id)
+    if not diagram:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Diagram not found or not publicly available.",
+        )
+    return diagram
 
 
 # ---------------------------------------------------------------------------
