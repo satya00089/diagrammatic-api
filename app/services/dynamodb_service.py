@@ -63,6 +63,7 @@ class DynamoDBService:
         self.diagrams_table: Table = dynamodb.Table(settings.dynamodb_diagrams_table)
         self.problems_table: Table = dynamodb.Table(settings.dynamodb_problems_table)
         self.attempts_table: Table = dynamodb.Table(settings.dynamodb_attempts_table)
+        self.walkthroughs_table: Table = dynamodb.Table(settings.dynamodb_walkthroughs_table)
 
     # User operations
     def create_user(
@@ -987,6 +988,22 @@ class DynamoDBService:
             )
         except ClientError as e:
             print(f"get_public_diagram error: {e}")
+            return None
+
+
+    # Guided walkthrough operations
+
+    def get_walkthrough_by_problem_id(
+        self, problem_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get a guided walkthrough by problem ID."""
+        try:
+            response = self.walkthroughs_table.get_item(Key={"problem_id": problem_id})
+            item = response.get("Item")
+            if item:
+                return convert_decimal_to_float(item)
+            return None
+        except ClientError:
             return None
 
 
