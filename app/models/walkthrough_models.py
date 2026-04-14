@@ -5,13 +5,6 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 
-class GuidedPropertyEntry(BaseModel):
-    """A single canvas property: the value and an HTML explanation of why."""
-
-    value: str
-    description: str = ""
-
-
 class GuidedComponentStep(BaseModel):
     """A component to be added to the canvas as part of a guided step."""
 
@@ -21,7 +14,7 @@ class GuidedComponentStep(BaseModel):
     description: Optional[str] = None
     position: Dict[str, float]
     iconUrl: Optional[str] = None
-    properties: Dict[str, GuidedPropertyEntry] = {}
+    properties: Dict[str, Any] = {}
     highlightReason: str
 
 
