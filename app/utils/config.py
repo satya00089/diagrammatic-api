@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     components_table_name: str = Field(
         "diagrammatic_components", validation_alias="COMPONENTS_TABLE_NAME"
     )
+    dynamodb_walkthroughs_table: str = Field(
+        "diagrammatic_guided_walkthroughs", validation_alias="DYNAMODB_WALKTHROUGHS_TABLE"
+    )
 
     class Config:
         """Pydantic configuration to load from .env file."""
