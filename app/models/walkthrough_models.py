@@ -15,6 +15,7 @@ class GuidedComponentStep(BaseModel):
     position: Dict[str, float]
     iconUrl: Optional[str] = None
     properties: Dict[str, Any] = {}
+    data: Optional[Dict[str, Any]] = None
     highlightReason: str
 
 
