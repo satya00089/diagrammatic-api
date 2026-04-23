@@ -78,6 +78,11 @@ class Settings(BaseSettings):
         "spritesheet", validation_alias="SPRITES_KEY_PREFIX"
     )
 
+    # ML training data — canvas event logs stored as JSONL in S3
+    training_s3_bucket: str = Field(
+        "diagrammatic-ml-training", validation_alias="TRAINING_S3_BUCKET"
+    )
+
     class Config:
         """Pydantic configuration to load from .env file."""
 
