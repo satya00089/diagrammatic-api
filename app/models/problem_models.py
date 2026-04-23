@@ -18,6 +18,7 @@ class ProblemSummary(BaseModel):
     estimatedTime: str = Field(alias="estimated_time")
     tags: List[str] = []
     companies: List[str] = []
+    has_guided_walkthrough: bool = False
 
     class Config:
         """Pydantic configuration for ProblemSummary."""
