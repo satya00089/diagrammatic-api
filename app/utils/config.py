@@ -64,10 +64,18 @@ class Settings(BaseSettings):
     )
 
     components_table_name: str = Field(
-        "diagrammatic_components", validation_alias="COMPONENTS_TABLE_NAME"
+        "diagrammatic_components", validation_alias="DYNAMODB_COMPONENTS_TABLE"
     )
     dynamodb_walkthroughs_table: str = Field(
         "diagrammatic_guided_walkthroughs", validation_alias="DYNAMODB_WALKTHROUGHS_TABLE"
+    )
+
+    # Spritesheet configuration
+    sprites_s3_bucket: str = Field(
+        "provider-icons-next-zen", validation_alias="SPRITES_S3_BUCKET"
+    )
+    sprites_key_prefix: str = Field(
+        "spritesheet", validation_alias="SPRITES_KEY_PREFIX"
     )
 
     class Config:
