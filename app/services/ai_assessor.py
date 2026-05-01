@@ -240,11 +240,13 @@ class AIAssessorService:
         if has_load_balancer:
             base_score += 15
 
-        # Create list of components missing descriptions
+        # Create list of components missing descriptions (strip HTML before checking)
         missing_descriptions = [
             c.label
             for c in request.components
-            if not (c.properties and c.properties.get("description", "").strip())
+            if not self._has_meaningful_description(
+                (c.properties or {}).get("description", "")
+            )
         ]
 
         return AssessmentResponse(
