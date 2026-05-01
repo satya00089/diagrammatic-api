@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Request, status
 
 from app.models.analytics_models import AnalyticsEventBatch
-from app.services.s3_analytics_logger import s3_analytics_logger
+from app.services.s3_analytics_aggregator import s3_analytics_aggregator
 from app.utils.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -16,12 +16,12 @@ router = APIRouter()
 
 
 def _pseudonymize_user(user_id: str) -> str:
+    # Left for compatibility; aggregated pipeline will not use pseudonymized ids
     settings = get_settings()
     secret = getattr(settings, "analytics_hmac_secret", None)
     if secret:
         return hmac.new(secret.encode("utf-8"), user_id.encode("utf-8"), hashlib.sha256).hexdigest()
-    # Fallback - no secret configured; log a warning and return raw id (not recommended)
-    logger.warning("analytics_hmac_secret not configured; storing raw user_id for analytics")
+    logger.debug("analytics_hmac_secret not configured; pseudonymization skipped")
     return user_id
 
 
@@ -40,38 +40,11 @@ async def ingest_analytics_batch(
     if not batch.events:
         return {"accepted": 0}
 
-    # Server-side pseudonymization of user_id
-    if batch.user_id:
-        user_part = _pseudonymize_user(batch.user_id)
-    elif batch.anon_id:
-        user_part = f"anon_{batch.anon_id}"
-    else:
-        user_part = "anonymous"
+    # For a cookie-less, aggregated pipeline we do NOT persist IPs or user ids.
+    # Instead, aggregate event counts server-side into daily counters.
+    background_tasks.add_task(s3_analytics_aggregator.aggregate_events, batch.events)
 
-    # Capture client IP server-side
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        ip = forwarded.split(",")[0].strip()
-    else:
-        ip = request.client.host if request.client else None
-
-    user_agent = request.headers.get("User-Agent")
-
-    background_tasks.add_task(
-        s3_analytics_logger.append_events,
-        user_part,
-        batch.session_id,
-        batch.events,
-        ip,
-        user_agent,
-    )
-
-    logger.debug(
-        "Queued %d analytics events for user=%s session=%s",
-        len(batch.events),
-        user_part,
-        batch.session_id,
-    )
+    logger.debug("Queued %d analytics events for aggregation", len(batch.events))
 
     return {"accepted": len(batch.events)}
 
