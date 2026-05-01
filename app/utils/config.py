@@ -70,17 +70,18 @@ class Settings(BaseSettings):
         "diagrammatic_guided_walkthroughs", validation_alias="DYNAMODB_WALKTHROUGHS_TABLE"
     )
 
-    # Spritesheet configuration
-    sprites_s3_bucket: str = Field(
-        "provider-icons-next-zen", validation_alias="SPRITES_S3_BUCKET"
-    )
+    # Spritesheet key prefix (sheets are stored under the analytics bucket)
     sprites_key_prefix: str = Field(
         "spritesheet", validation_alias="SPRITES_KEY_PREFIX"
     )
 
-    # ML training data — canvas event logs stored as JSONL in S3
-    training_s3_bucket: str = Field(
-        "diagrammatic-ml-training", validation_alias="TRAINING_S3_BUCKET"
+    # Primary S3 bucket used by the application for all S3 writes.
+    # This single env var replaces prior `TRAINING_S3_BUCKET` / `S3_BUCKET`.
+    analytics_s3_bucket: str = Field(..., validation_alias="ANALYTICS_S3_BUCKET")
+
+    # HMAC secret used to pseudonymize user IDs for analytics storage.
+    analytics_hmac_secret: str | None = Field(
+        None, validation_alias="ANALYTICS_HMAC_SECRET"
     )
 
     class Config:

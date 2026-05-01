@@ -20,6 +20,7 @@ from app.routers import (
     walkthroughs,
     sprites,
     events,
+    analytics,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.services.dynamodb_service import dynamodb_service
@@ -86,6 +87,7 @@ app.include_router(recommendations.router, prefix=API_V1_PREFIX, tags=["recommen
 app.include_router(share.router, prefix=API_V1_PREFIX, tags=["share"])
 app.include_router(walkthroughs.router, prefix=API_V1_PREFIX, tags=["walkthroughs"])
 app.include_router(events.router, prefix=API_V1_PREFIX, tags=["events"])
+app.include_router(analytics.router, prefix=API_V1_PREFIX, tags=["analytics"])
 app.include_router(
     components.router, tags=["components"]
 )  # No prefix needed, router has /api/components

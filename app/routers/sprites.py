@@ -43,7 +43,7 @@ async def get_sprite_manifest(provider: str):
     key = f"{settings.sprites_key_prefix}/{provider}/manifest.json"
     s3 = _s3_client(settings)
     try:
-        obj = s3.get_object(Bucket=settings.sprites_s3_bucket, Key=key)
+        obj = s3.get_object(Bucket=settings.analytics_s3_bucket, Key=key)
         manifest = json.loads(obj["Body"].read())
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to load manifest: {exc}") from exc
@@ -75,7 +75,7 @@ async def get_sprite_sheet(provider: str, sheet_file: str):
     key = f"{settings.sprites_key_prefix}/{provider}/{sheet_file}"
     s3 = _s3_client(settings)
     try:
-        obj = s3.get_object(Bucket=settings.sprites_s3_bucket, Key=key)
+        obj = s3.get_object(Bucket=settings.analytics_s3_bucket, Key=key)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"Sheet not found: {exc}") from exc
 
