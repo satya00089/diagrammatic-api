@@ -27,7 +27,7 @@ class S3EventLogger:
 
     def __init__(self) -> None:
         settings = get_settings()
-        self._bucket = settings.training_s3_bucket
+        self._bucket = settings.analytics_s3_bucket
         self._client = boto3.client(
             "s3",
             region_name=settings.aws_region,
