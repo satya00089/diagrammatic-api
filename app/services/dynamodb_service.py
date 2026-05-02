@@ -148,6 +148,43 @@ class DynamoDBService:
         except ClientError:
             return None
 
+    def get_user_preferences(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Return the preferences blob for a user, if present."""
+        try:
+            response = self.users_table.get_item(Key={"id": user_id})
+            item = response.get("Item")
+            if item:
+                # preferences may be stored as a map
+                prefs = item.get("preferences")
+                return convert_decimal_to_float(prefs) if prefs is not None else None
+            return None
+        except ClientError:
+            return None
+
+    def update_user_preferences(self, user_id: str, preferences: Dict[str, Any]) -> Optional[User]:
+        """Upsert user preferences atomically and return updated user."""
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+
+            prefs_safe = convert_floats_to_decimal(preferences)
+
+            response = self.users_table.update_item(
+                Key={"id": user_id},
+                UpdateExpression="SET preferences = :prefs, updatedAt = :updated",
+                ExpressionAttributeValues={
+                    ":prefs": prefs_safe,
+                    ":updated": now,
+                },
+                ReturnValues="ALL_NEW",
+            )
+            item = response.get("Attributes")
+            if item:
+                return User(**item)
+            return None
+        except ClientError as e:
+            print(f"Error updating user preferences: {e}")
+            return None
+
     def get_user_by_google_id(self, google_id: str) -> Optional[User]:
         """Get user by Google ID using GSI."""
         try:
