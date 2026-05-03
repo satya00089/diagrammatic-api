@@ -21,6 +21,7 @@ from app.routers import (
     sprites,
     events,
     analytics,
+    learning_paths,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.services.dynamodb_service import dynamodb_service
@@ -92,6 +93,7 @@ app.include_router(
     components.router, tags=["components"]
 )  # No prefix needed, router has /api/components
 app.include_router(sprites.router, tags=["sprites"])
+app.include_router(learning_paths.router, prefix=API_V1_PREFIX, tags=["learning-paths"])
 
 
 @app.get("/")
