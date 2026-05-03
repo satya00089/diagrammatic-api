@@ -3,7 +3,8 @@
 import time
 from collections import defaultdict, deque
 from typing import Dict, Deque
-from fastapi import Request, HTTPException
+from fastapi import Request
+from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
@@ -24,9 +25,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Check rate limit for this IP
         if not self._is_allowed(client_ip):
-            raise HTTPException(
+            # Return a JSON response instead of raising to avoid TaskGroup
+            # exception handling issues in BaseHTTPMiddleware.
+            return JSONResponse(
                 status_code=429,
-                detail=f"Rate limit exceeded. Maximum {self.requests_per_minute} requests per minute allowed.",
+                content={
+                    "detail": f"Rate limit exceeded. Maximum {self.requests_per_minute} requests per minute allowed."
+                },
             )
 
         # Record this request
