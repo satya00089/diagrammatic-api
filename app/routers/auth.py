@@ -38,6 +38,14 @@ def get_current_user(
 @router.post("/auth/signup", response_model=AuthResponse)
 async def signup(request: SignupRequest):
     """Register a new user with email and password."""
+    # bcrypt only accepts up to 72 bytes; reject longer passwords early so we
+    # return a clean client-facing error instead of a 500 from the hash layer.
+    if len(request.password.encode("utf-8")) > 72:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is too long. Please use 72 bytes or fewer.",
+        )
+
     # Check if user already exists
     existing_user = dynamodb_service.get_user_by_email(request.email)
     if existing_user:
