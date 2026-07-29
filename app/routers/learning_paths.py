@@ -17,7 +17,7 @@ router = APIRouter()
 # repo root is parents[3]
 BASE_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = BASE_DIR / "diagrammatic-data" / "learning-paths"
-SAMPLE_FILE = DATA_DIR / "sample-learning-path.json"
+SAMPLE_FILE = DATA_DIR / "learning-paths.json"
 
 
 def _read_sample():
