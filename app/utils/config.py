@@ -84,6 +84,9 @@ class Settings(BaseSettings):
         None, validation_alias="ANALYTICS_HMAC_SECRET"
     )
 
+    # Whisper transcription service (proxied so the browser never calls it directly)
+    whisper_service_url: str = Field(..., validation_alias="WHISPER_SERVICE_URL")
+
     class Config:
         """Pydantic configuration to load from .env file."""
 

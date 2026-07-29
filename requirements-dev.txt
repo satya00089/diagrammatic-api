@@ -1,0 +1,6 @@
+# Local development only - not needed in deployed environments (Lambda/CI).
+
+# Trusts the OS certificate store instead of just certifi's bundle. Needed on
+# networks with a TLS-inspecting corporate proxy (e.g. Cisco Secure Access)
+# whose root CA is trusted by Windows but not by Python's own cert bundle.
+pip-system-certs>=5.3
