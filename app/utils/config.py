@@ -76,6 +76,7 @@ class Settings(BaseSettings):
         "Diagrammatic <no-reply@diagrammatic.next-zen.dev>",
         validation_alias="RESEND_FROM_EMAIL",
     )
+    brand_logo_url: str | None = Field(None, validation_alias="BRAND_LOGO_URL")
     email_verification_secret: str | None = Field(
         None, validation_alias="EMAIL_VERIFICATION_SECRET"
     )
