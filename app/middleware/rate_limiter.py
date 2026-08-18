@@ -13,9 +13,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     Rate limiting middleware that tracks requests per IP address.
     """
 
-    def __init__(self, app, requests_per_minute: int = 30):
+    def __init__(self, app, requests_per_minute: int = 30, trusted_proxy_ips: list[str] | None = None):
         super().__init__(app)
         self.requests_per_minute = requests_per_minute
+        self.trusted_proxy_ips = set(trusted_proxy_ips or [])
         # Store request timestamps per IP
         self.request_history: Dict[str, Deque[float]] = defaultdict(deque)
 
@@ -43,18 +44,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def _get_client_ip(self, request: Request) -> str:
         """Extract client IP from request headers or connection."""
-        # Check for forwarded headers first (common in production behind proxies)
+        peer_ip = request.client.host if request.client else "unknown"
+        # Forwarding headers are user-controlled unless the request arrived
+        # through a proxy we explicitly trust.
+        if peer_ip not in self.trusted_proxy_ips:
+            return peer_ip
+
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
-            # Take the first IP in the chain
             return forwarded_for.split(",")[0].strip()
-
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
-
-        # Fallback to direct connection IP
-        return request.client.host if request.client else "unknown"
+        return request.headers.get("X-Real-IP") or peer_ip
 
     def _is_allowed(self, client_ip: str) -> bool:
         """Check if the client IP is within rate limit."""

@@ -73,6 +73,7 @@ class DynamoDBService:
         name: Optional[str] = None,
         picture: Optional[str] = None,
         google_id: Optional[str] = None,
+        email_verified: bool = False,
     ) -> User:
         """Create a new user in DynamoDB."""
         # First check if user already exists to prevent duplicates
@@ -97,6 +98,7 @@ class DynamoDBService:
             "name": name,
             "createdAt": now,
             "updatedAt": now,
+            "emailVerified": email_verified,
         }
 
         if password_hash:
@@ -121,6 +123,97 @@ class DynamoDBService:
             raise
 
         return User(**item)
+
+    def save_email_verification_token(
+        self, user_id: str, token_hash: str, expires_at: str, sent_at: str
+    ) -> Optional[User]:
+        """Store the newest verification token, invalidating all previous links."""
+        try:
+            response = self.users_table.update_item(
+                Key={"id": user_id},
+                UpdateExpression=(
+                    "SET verificationTokenHash = :token, verificationExpiresAt = :expires, "
+                    "verificationSentAt = :sent, verificationVersion = "
+                    "if_not_exists(verificationVersion, :zero) + :one, updatedAt = :updated"
+                ),
+                ExpressionAttributeValues={
+                    ":token": token_hash,
+                    ":expires": expires_at,
+                    ":sent": sent_at,
+                    ":zero": 0,
+                    ":one": 1,
+                    ":updated": sent_at,
+                },
+                ReturnValues="ALL_NEW",
+            )
+            item = response.get("Attributes")
+            return User(**item) if item else None
+        except ClientError as e:
+            print(f"Error saving email verification token: {e}")
+            return None
+
+    def mark_email_verified(
+        self, user_id: str, expected_token_hash: Optional[str] = None
+    ) -> Optional[User]:
+        """Mark a user verified and remove the one-time token material."""
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            update_kwargs: Dict[str, Any] = {
+                "Key": {"id": user_id},
+                "UpdateExpression": (
+                    "SET emailVerified = :verified, updatedAt = :updated "
+                    "REMOVE verificationTokenHash, verificationExpiresAt, verificationSentAt"
+                ),
+                "ExpressionAttributeValues": {":verified": True, ":updated": now},
+                "ReturnValues": "ALL_NEW",
+            }
+            # The conditional write makes the link single-use even if two
+            # requests race with the same token.
+            if expected_token_hash:
+                update_kwargs["ConditionExpression"] = "verificationTokenHash = :expected"
+                update_kwargs["ExpressionAttributeValues"][":expected"] = expected_token_hash
+            response = self.users_table.update_item(**update_kwargs)
+            item = response.get("Attributes")
+            return User(**item) if item else None
+        except ClientError as e:
+            print(f"Error marking email verified: {e}")
+            return None
+
+    def restore_email_verification_state(
+        self, user: User, expected_token_hash: str
+    ) -> None:
+        """Undo a replacement token when delivery was not accepted by Resend."""
+        try:
+            values: Dict[str, Any] = {
+                ":expected": expected_token_hash,
+                ":updated": user.updatedAt,
+                ":version": user.verificationVersion,
+            }
+            if user.verificationTokenHash and user.verificationExpiresAt and user.verificationSentAt:
+                update_expression = (
+                    "SET verificationTokenHash = :token, verificationExpiresAt = :expires, "
+                    "verificationSentAt = :sent, verificationVersion = :version, updatedAt = :updated"
+                )
+                values.update({
+                    ":token": user.verificationTokenHash,
+                    ":expires": user.verificationExpiresAt,
+                    ":sent": user.verificationSentAt,
+                })
+            else:
+                update_expression = (
+                    "SET verificationVersion = :version, updatedAt = :updated "
+                    "REMOVE verificationTokenHash, verificationExpiresAt, verificationSentAt"
+                )
+            self.users_table.update_item(
+                Key={"id": user.id},
+                UpdateExpression=update_expression,
+                ConditionExpression="verificationTokenHash = :expected",
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as e:
+            # A concurrent resend may have already replaced this state; do not
+            # overwrite it with stale data.
+            print(f"Error restoring email verification state: {e}")
 
     def get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email using GSI."""
