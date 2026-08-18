@@ -62,7 +62,7 @@ class AuthService:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    def verify_google_token(self, credential: str) -> Dict[str, str]:
+    def verify_google_token(self, credential: str) -> Dict[str, Any]:
         """
         Verify Google OAuth credential and extract user info.
 
@@ -86,12 +86,23 @@ class AuthService:
                 "name": idinfo.get("name", ""),
                 "picture": idinfo.get("picture", ""),
                 "google_id": idinfo["sub"],
+                "email_verified": idinfo.get("email_verified", False),
+                "hosted_domain": idinfo.get("hd"),
             }
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid Google credential: {str(e)}",
             )
+
+    @staticmethod
+    def is_google_email_authoritative(google_info: Dict[str, Any]) -> bool:
+        """Whether Google can safely prove current ownership of this email."""
+        email = str(google_info.get("email", "")).lower()
+        email_verified = str(google_info.get("email_verified", "")).lower() == "true"
+        return email.endswith("@gmail.com") or (
+            email_verified and bool(google_info.get("hosted_domain"))
+        )
 
 
 # Global auth service instance

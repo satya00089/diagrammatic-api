@@ -30,6 +30,11 @@ class Settings(BaseSettings):
 
     # Rate Limiting
     rate_limit_per_minute: int = Field(30, validation_alias="RATE_LIMIT_PER_MINUTE")
+    # Only these direct peer IPs may supply X-Forwarded-For / X-Real-IP.
+    # Leave empty when the API is directly internet-facing.
+    trusted_proxy_ips: list[str] = Field(
+        [], validation_alias="TRUSTED_PROXY_IPS"
+    )
 
     # JWT Configuration
     jwt_secret_key: str = Field(..., validation_alias="JWT_SECRET_KEY")
@@ -61,6 +66,24 @@ class Settings(BaseSettings):
     frontend_url: str = Field(
         "https://diagrammatic.next-zen.dev",
         validation_alias="FRONTEND_URL",
+    )
+
+    # Transactional email / email verification.  Keep the API key optional so
+    # local development can start without Resend; signup will return a clear
+    # service-unavailable response until it is configured.
+    resend_api_key: str | None = Field(None, validation_alias="RESEND_API_KEY")
+    resend_from_email: str = Field(
+        "Diagrammatic <no-reply@diagrammatic.next-zen.dev>",
+        validation_alias="RESEND_FROM_EMAIL",
+    )
+    email_verification_secret: str | None = Field(
+        None, validation_alias="EMAIL_VERIFICATION_SECRET"
+    )
+    email_verification_expire_minutes: int = Field(
+        20, validation_alias="EMAIL_VERIFICATION_EXPIRE_MINUTES"
+    )
+    email_verification_resend_cooldown_seconds: int = Field(
+        60, validation_alias="EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS"
     )
 
     components_table_name: str = Field(

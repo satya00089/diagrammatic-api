@@ -25,6 +25,19 @@ class GoogleAuthRequest(BaseModel):
     credential: str
 
 
+class VerifyEmailRequest(BaseModel):
+    """A token received from an email activation link."""
+
+    userId: str
+    token: str = Field(..., min_length=20, max_length=512)
+
+
+class ResendVerificationRequest(BaseModel):
+    """Request a replacement activation email."""
+
+    email: EmailStr
+
+
 class UserResponse(BaseModel):
     """Response model for user data."""
 
@@ -33,6 +46,7 @@ class UserResponse(BaseModel):
     name: Optional[str] = None
     picture: Optional[str] = None
     preferences: Optional[dict] = None
+    emailVerified: bool = False
     createdAt: str
 
     class Config:
@@ -48,6 +62,13 @@ class AuthResponse(BaseModel):
     token: str
 
 
+class SignupPendingResponse(BaseModel):
+    """Response returned after a password signup awaits email activation."""
+
+    message: str
+    email: str
+
+
 class User(BaseModel):
     """Internal user model."""
 
@@ -58,6 +79,11 @@ class User(BaseModel):
     picture: Optional[str] = None
     googleId: Optional[str] = None
     preferences: Optional[dict] = None
+    emailVerified: bool = False
+    verificationTokenHash: Optional[str] = None
+    verificationExpiresAt: Optional[str] = None
+    verificationSentAt: Optional[str] = None
+    verificationVersion: int = 0
     createdAt: str
     updatedAt: str
 

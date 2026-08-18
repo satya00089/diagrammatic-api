@@ -1,5 +1,9 @@
 """Authentication router for signup, login, and Google OAuth."""
 
+from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import secrets
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,14 +14,64 @@ from app.models.auth_models import (
     LoginRequest,
     GoogleAuthRequest,
     AuthResponse,
+    SignupPendingResponse,
+    VerifyEmailRequest,
+    ResendVerificationRequest,
     UserResponse,
     UserPreferences,
 )
 from app.services.auth_service import auth_service
 from app.services.dynamodb_service import dynamodb_service
+from app.services.email_service import email_service, EmailDeliveryError
+from app.utils.config import get_settings
 
 router = APIRouter()
 security = HTTPBearer()
+settings = get_settings()
+
+
+def _is_email_verified(user: Any) -> bool:
+    """Google identity tokens assert a verified mailbox, including legacy users."""
+    return bool(getattr(user, "emailVerified", False) or getattr(user, "googleId", None))
+
+
+def _hash_verification_token(token: str) -> str:
+    secret = settings.email_verification_secret or settings.jwt_secret_key
+    return hmac.new(secret.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _verification_resend_available(user: Any) -> bool:
+    sent_at = getattr(user, "verificationSentAt", None)
+    if not sent_at:
+        return True
+    try:
+        last_sent = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return datetime.now(timezone.utc) >= last_sent + timedelta(
+        seconds=settings.email_verification_resend_cooldown_seconds
+    )
+
+
+async def _issue_verification_email(user: Any) -> None:
+    """Persist a new token before delivery, so any older link is immediately invalid."""
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=settings.email_verification_expire_minutes)
+    token_hash = _hash_verification_token(token)
+    saved = dynamodb_service.save_email_verification_token(
+        user.id, token_hash, expires_at.isoformat(), now.isoformat()
+    )
+    if not saved:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to create activation link")
+    try:
+        await email_service.send_verification_email(user.email, user.id, token)
+    except EmailDeliveryError as exc:
+        dynamodb_service.restore_email_verification_state(user, token_hash)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="We could not send the activation email. Please try again shortly.",
+        ) from exc
 
 
 def get_current_user(
@@ -32,10 +86,16 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
         )
+    user = dynamodb_service.get_user_by_id(user_id)
+    if not user or not _is_email_verified(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please verify your email address before continuing",
+        )
     return payload
 
 
-@router.post("/auth/signup", response_model=AuthResponse)
+@router.post("/auth/signup", response_model=SignupPendingResponse)
 async def signup(request: SignupRequest):
     """Register a new user with email and password."""
     # bcrypt only accepts up to 72 bytes; reject longer passwords early so we
@@ -49,6 +109,16 @@ async def signup(request: SignupRequest):
     # Check if user already exists
     existing_user = dynamodb_service.get_user_by_email(request.email)
     if existing_user:
+        if not _is_email_verified(existing_user):
+            if not _verification_resend_available(existing_user):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Please wait a minute before requesting another activation email.",
+                )
+            await _issue_verification_email(existing_user)
+            return SignupPendingResponse(
+                message="Check your inbox to activate your account.", email=existing_user.email
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered",
@@ -61,22 +131,47 @@ async def signup(request: SignupRequest):
     user = dynamodb_service.create_user(
         email=request.email, password_hash=password_hash, name=request.name
     )
-
-    # Create JWT token
-    token = auth_service.create_access_token(
-        data={"user_id": user.id, "email": user.email}
+    await _issue_verification_email(user)
+    return SignupPendingResponse(
+        message="Check your inbox to activate your account.", email=user.email
     )
 
-    return AuthResponse(
-        user=UserResponse(
-            id=user.id,
-            email=user.email,
-            name=user.name,
-            picture=user.picture,
-            createdAt=user.createdAt,
-        ),
-        token=token,
+
+@router.post("/auth/verify-email", response_model=SignupPendingResponse)
+async def verify_email(request: VerifyEmailRequest):
+    """Activate a password account using its single-use, expiring token."""
+    user = dynamodb_service.get_user_by_id(request.userId)
+    if not user or not user.verificationTokenHash or not user.verificationExpiresAt:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This activation link is invalid or has already been used.")
+    try:
+        expires_at = datetime.fromisoformat(user.verificationExpiresAt.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This activation link is invalid.")
+    if expires_at <= datetime.now(timezone.utc) or not hmac.compare_digest(
+        user.verificationTokenHash, _hash_verification_token(request.token)
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This activation link is invalid or has expired.")
+    verified = dynamodb_service.mark_email_verified(
+        user.id, expected_token_hash=user.verificationTokenHash
     )
+    if not verified:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to activate account")
+    return SignupPendingResponse(message="Your email has been verified. You can now sign in.", email=verified.email)
+
+
+@router.post("/auth/resend-verification", response_model=SignupPendingResponse)
+async def resend_verification(request: ResendVerificationRequest):
+    """Send a replacement link without revealing whether an account exists."""
+    generic = SignupPendingResponse(
+        message="If an unverified account exists, an activation email has been sent.", email=request.email
+    )
+    user = dynamodb_service.get_user_by_email(request.email)
+    if not user or _is_email_verified(user):
+        return generic
+    if not _verification_resend_available(user):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Please wait a minute before requesting another activation email.")
+    await _issue_verification_email(user)
+    return generic
 
 
 @router.post("/auth/login", response_model=AuthResponse)
@@ -99,6 +194,12 @@ async def login(request: LoginRequest):
             detail="Invalid email or password",
         )
 
+    if not _is_email_verified(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please activate your account using the link sent to your email.",
+        )
+
     # Create JWT token
     token = auth_service.create_access_token(
         data={"user_id": user.id, "email": user.email}
@@ -110,6 +211,7 @@ async def login(request: LoginRequest):
             email=user.email,
             name=user.name,
             picture=user.picture,
+            emailVerified=_is_email_verified(user),
             createdAt=user.createdAt,
         ),
         token=token,
@@ -130,6 +232,11 @@ async def google_auth(request: GoogleAuthRequest):
         user = dynamodb_service.get_user_by_email(google_info["email"])
 
         if user and not user.googleId:
+            if not auth_service.is_google_email_authoritative(google_info):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This email is already registered. Sign in with email and password instead.",
+                )
             # User exists by email but no Google ID - update the existing user
             updated_user = dynamodb_service.update_user_google_id(
                 user.id, google_info["google_id"], google_info.get("picture")
@@ -143,6 +250,7 @@ async def google_auth(request: GoogleAuthRequest):
                 name=google_info["name"],
                 picture=google_info.get("picture"),
                 google_id=google_info["google_id"],
+                email_verified=True,
             )
 
     if not user:
@@ -150,6 +258,10 @@ async def google_auth(request: GoogleAuthRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create or retrieve user",
         )
+
+    if not _is_email_verified(user):
+        # A valid Google identity token proves control of the Google mailbox.
+        user = dynamodb_service.mark_email_verified(user.id) or user
 
     # Create JWT token
     token = auth_service.create_access_token(
@@ -162,6 +274,7 @@ async def google_auth(request: GoogleAuthRequest):
             email=user.email,
             name=user.name,
             picture=user.picture,
+            emailVerified=_is_email_verified(user),
             createdAt=user.createdAt,
         ),
         token=token,
@@ -182,6 +295,7 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
         email=user.email,
         name=user.name,
         picture=user.picture,
+        emailVerified=_is_email_verified(user),
         preferences=getattr(user, "preferences", None),
         createdAt=user.createdAt,
     )

@@ -65,7 +65,9 @@ app = FastAPI(
 
 # Middleware
 app.add_middleware(
-    RateLimitMiddleware, requests_per_minute=settings.rate_limit_per_minute
+    RateLimitMiddleware,
+    requests_per_minute=settings.rate_limit_per_minute,
+    trusted_proxy_ips=settings.trusted_proxy_ips,
 )
 
 app.add_middleware(
