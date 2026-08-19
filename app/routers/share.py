@@ -280,16 +280,19 @@ Generate three things:
 
 Return JSON with keys: linkedinPost, twitterPost, mediumArticle."""
 
-    response = await client.chat.completions.create(
-        model=settings.openai_model,
-        messages=[
+    completion_options = {
+        "model": settings.openai_model,
+        "messages": [
             {"role": "system", "content": "You are a helpful technical content writer. Always respond with valid JSON."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.7,
-        max_tokens=2000,
-        response_format={"type": "json_object"},
-    )
+        "max_completion_tokens": settings.openai_max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    if not settings.openai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
+        completion_options["temperature"] = settings.openai_temperature
+
+    response = await client.chat.completions.create(**completion_options)
 
     import json
     result = json.loads(response.choices[0].message.content)

@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from uuid import uuid4
 
 import boto3
@@ -147,7 +147,7 @@ class DynamoDBService:
                 ReturnValues="ALL_NEW",
             )
             item = response.get("Attributes")
-            return User(**item) if item else None
+            return User.model_validate(cast(Dict[str, Any], item)) if item else None
         except ClientError as e:
             print(f"Error saving email verification token: {e}")
             return None
@@ -174,7 +174,7 @@ class DynamoDBService:
                 update_kwargs["ExpressionAttributeValues"][":expected"] = expected_token_hash
             response = self.users_table.update_item(**update_kwargs)
             item = response.get("Attributes")
-            return User(**item) if item else None
+            return User.model_validate(cast(Dict[str, Any], item)) if item else None
         except ClientError as e:
             print(f"Error marking email verified: {e}")
             return None
@@ -272,7 +272,7 @@ class DynamoDBService:
             )
             item = response.get("Attributes")
             if item:
-                return User(**item)
+                return User.model_validate(cast(Dict[str, Any], item))
             return None
         except ClientError as e:
             print(f"Error updating user preferences: {e}")
@@ -806,6 +806,9 @@ class DynamoDBService:
                 createdAt=item["createdAt"],
                 updatedAt=now,
                 lastAttemptedAt=now,
+                publishedAt=None,
+                authorName=None,
+                authorPicture=None,
             )
         except ClientError as e:
             print(f"Error creating/updating attempt: {e}")

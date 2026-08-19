@@ -1,20 +1,35 @@
 """Service for assessing system design diagrams using AI and rule-based methods."""
 
-from typing import Dict, Any
+from typing import Mapping, TypeAlias, TypedDict, cast
 import json
 import re
 import time
 
 from openai import AsyncOpenAI
+from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
 
 from app.models.request_models import AssessmentRequest
 from app.models.response_models import (
     AssessmentResponse,
+    FeedbackCategory,
+    FeedbackType,
     ScoreBreakdown,
     ValidationFeedback,
 )
 from app.utils.prompts import get_assessment_prompt
 from app.utils.config import get_settings
+
+
+JsonObject: TypeAlias = dict[str, object]
+
+
+class Coverage(TypedDict):
+    """Description-coverage values calculated from a request."""
+
+    comp_pct: float
+    conn_pct: float
+    comp_ok: bool
+    conn_ok: bool
 
 
 class AIAssessorService:
@@ -31,12 +46,28 @@ class AIAssessorService:
     @staticmethod
     def _has_meaningful_description(text: str | None) -> bool:
         """Return True if text has at least 10 real characters after stripping HTML."""
-        if not text:
+        if not isinstance(text, str):
             return False
         stripped = re.sub(r"<[^>]+>", "", text).strip()
         return len(stripped) >= 10
 
-    def _compute_coverage(self, request: AssessmentRequest) -> Dict[str, Any]:
+    @staticmethod
+    def _parse_json_response(content: str | None) -> JsonObject:
+        """Parse a JSON-object model response, including fenced JSON output."""
+        if not content or not content.strip():
+            raise ValueError("The AI returned an empty response")
+        text = content.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+        parsed: object = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("The AI response must be a JSON object")
+        raw_object = cast(dict[object, object], parsed)
+        if not all(isinstance(key, str) for key in raw_object):
+            raise ValueError("AI response object keys must be strings")
+        return {cast(str, key): value for key, value in raw_object.items()}
+
+    def _compute_coverage(self, request: AssessmentRequest) -> Coverage:
         """Compute description coverage for components and connections."""
         total_comps = len(request.components)
         comps_with_desc = sum(
@@ -72,10 +103,11 @@ class AIAssessorService:
             # Generate structured prompt
             prompt = get_assessment_prompt(request)
 
-            # Call OpenAI API
-            response = await self.client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=[
+            # GPT-5/o-series reasoning models reject sampling temperature.
+            # Keep the legacy temperature setting for non-reasoning models.
+            completion_options: CompletionCreateParamsNonStreaming = {
+                "model": self.settings.openai_model,
+                "messages": [
                     {
                         "role": "system",
                         "content": (
@@ -88,13 +120,18 @@ class AIAssessorService:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.3,
-                max_tokens=4000,
-                response_format={"type": "json_object"},
+                "max_completion_tokens": self.settings.openai_max_tokens,
+                "response_format": {"type": "json_object"},
+            }
+            if not self.settings.openai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
+                completion_options["temperature"] = self.settings.openai_temperature
+
+            response = await self.client.chat.completions.create(
+                **completion_options,
             )
 
             # Parse AI response
-            ai_result = json.loads(response.choices[0].message.content)
+            ai_result = self._parse_json_response(response.choices[0].message.content)
 
             # Transform to response model
             assessment = self._transform_ai_response(ai_result)
@@ -110,7 +147,11 @@ class AIAssessorService:
 
         except Exception as e:
             # Fallback to rule-based assessment
-            return self._fallback_assessment(request, str(e))
+            return self._fallback_assessment(
+                request,
+                str(e),
+                processing_time_ms=int((time.time() - start_time) * 1000),
+            )
 
     # ------------------------------------------------------------------
     # Post-processing
@@ -129,7 +170,7 @@ class AIAssessorService:
     )
 
     def _filter_description_feedback(
-        self, assessment: AssessmentResponse, coverage: Dict[str, Any]
+        self, assessment: AssessmentResponse, coverage: Coverage
     ) -> AssessmentResponse:
         """Remove or demote description-related feedback when coverage ≥ 70%."""
         comp_ok: bool = coverage["comp_ok"]
@@ -170,7 +211,7 @@ class AIAssessorService:
 
     # Scoring weights by dimension importance.
     # Architecture-critical dims carry more weight than documentation dims.
-    _SCORE_WEIGHTS: Dict[str, float] = {
+    _SCORE_WEIGHTS: dict[str, float] = {
         "scalability": 2.0,
         "reliability": 2.0,
         "security": 2.0,
@@ -185,11 +226,20 @@ class AIAssessorService:
         "connection_clarity": 0.75,
     }
 
-    def _transform_ai_response(self, ai_result: Dict[str, Any]) -> AssessmentResponse:
+    def _transform_ai_response(self, ai_result: JsonObject) -> AssessmentResponse:
         # Transform AI JSON response to Pydantic model
-        scores = ScoreBreakdown(**ai_result.get("scores", {}))
+        raw_scores = ai_result.get("scores", {})
+        if not isinstance(raw_scores, Mapping):
+            raise ValueError("AI response field 'scores' must be an object")
+        scores = ScoreBreakdown.model_validate(cast(Mapping[str, object], raw_scores))
 
-        feedback = [ValidationFeedback(**fb) for fb in ai_result.get("feedback", [])]
+        raw_feedback = ai_result.get("feedback", [])
+        if not isinstance(raw_feedback, list):
+            raise ValueError("AI response field 'feedback' must be a list")
+        feedback = [
+            ValidationFeedback.model_validate(item)
+            for item in cast(list[object], raw_feedback)
+        ]
 
         # Weighted average: architecture-critical dims outweigh documentation dims
         weighted_sum = 0.0
@@ -203,23 +253,47 @@ class AIAssessorService:
         overall_score = round(weighted_sum / total_weight) if total_weight else 0
         overall_score = max(0, min(100, overall_score))
 
+        def string_list(field: str) -> list[str]:
+            value = ai_result.get(field, [])
+            if not isinstance(value, list):
+                return []
+            return [
+                item
+                for item in cast(list[object], value)
+                if isinstance(item, str)
+            ]
+
+        detailed_analysis = ai_result.get("detailed_analysis")
+        if isinstance(detailed_analysis, dict):
+            raw_analysis = cast(dict[object, object], detailed_analysis)
+            detailed_analysis = {
+                key: value
+                for key, value in raw_analysis.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+        else:
+            detailed_analysis = None
+
         return AssessmentResponse(
             is_valid=overall_score >= 50,
             overall_score=overall_score,
             scores=scores,
             feedback=feedback,
-            strengths=ai_result.get("strengths", []),
-            improvements=ai_result.get("improvements", []),
-            missing_components=ai_result.get("missing_components", []),
-            missing_descriptions=ai_result.get("missing_descriptions", []),
-            unclear_connections=ai_result.get("unclear_connections", []),
-            suggestions=ai_result.get("suggestions", []),
-            detailed_analysis=ai_result.get("detailed_analysis"),
-            interview_questions=ai_result.get("interview_questions", []),
+            strengths=string_list("strengths"),
+            improvements=string_list("improvements"),
+            missing_components=string_list("missing_components"),
+            missing_descriptions=string_list("missing_descriptions"),
+            unclear_connections=string_list("unclear_connections"),
+            suggestions=string_list("suggestions"),
+            detailed_analysis=detailed_analysis,
+            interview_questions=string_list("interview_questions"),
         )
 
     def _fallback_assessment(
-        self, request: AssessmentRequest, error: str
+        self,
+        request: AssessmentRequest,
+        error: str,
+        processing_time_ms: int | None = None,
     ) -> AssessmentResponse:
         # Simple rule-based fallback when AI fails
         component_count = len(request.components)
@@ -262,9 +336,9 @@ class AIAssessorService:
             ),
             feedback=[
                 ValidationFeedback(
-                    type="warning",
-                    message=f"AI assessment failed: {error}. Using fallback assessment.",
-                    category="maintainability",
+                    type=FeedbackType.WARNING,
+                    message="AI assessment is temporarily unavailable; a rule-based assessment was used instead.",
+                    category=FeedbackCategory.MAINTAINABILITY,
                 )
             ],
             strengths=["Basic architecture components present"],
@@ -280,4 +354,5 @@ class AIAssessorService:
                 "Consider adding monitoring and caching layers",
                 "Provide detailed component descriptions",
             ],
+            processing_time_ms=processing_time_ms,
         )
