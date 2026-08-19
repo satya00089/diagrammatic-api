@@ -75,6 +75,9 @@ async def get_progress(path_id: str, authorization: str | None = Header(None)):
         logger.debug("Invalid token when fetching progress: %s", e)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+
     prefs = dynamodb_service.get_user_preferences(user_id) or {}
     learning_progress = prefs.get("learningProgress") or {}
     completed = learning_progress.get(path_id, [])
@@ -98,6 +101,9 @@ async def post_progress(path_id: str, payload: dict, authorization: str | None =
         user_id = payload_token.get("user_id")
     except Exception as e:
         logger.debug("Invalid token when saving progress: %s", e)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+
+    if not isinstance(user_id, str) or not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
     if not isinstance(payload, dict) or "completed" not in payload:

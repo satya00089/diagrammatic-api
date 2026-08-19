@@ -6,6 +6,7 @@ from typing import List
 
 import boto3
 from botocore.exceptions import ClientError
+from mypy_boto3_s3 import S3Client
 
 from app.models.event_models import CanvasEvent
 from app.utils.config import get_settings
@@ -24,6 +25,8 @@ class S3EventLogger:
     S3 does not support true appends, so we GET → concat → PUT.
     This is safe at our write frequency (~1 batch per 15 s per session).
     """
+
+    _client: S3Client
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -49,7 +52,8 @@ class S3EventLogger:
             response = self._client.get_object(Bucket=self._bucket, Key=key)
             return response["Body"].read().decode("utf-8")
         except ClientError as exc:
-            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code in ("NoSuchKey", "404"):
                 return ""
             raise
 

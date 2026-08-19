@@ -44,7 +44,8 @@ class S3AnalyticsLogger:
             response = self._client.get_object(Bucket=self._bucket, Key=key)
             return response["Body"].read().decode("utf-8")
         except ClientError as exc:
-            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code in ("NoSuchKey", "404"):
                 return ""
             raise
 

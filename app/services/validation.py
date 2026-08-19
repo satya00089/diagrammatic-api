@@ -1,19 +1,18 @@
 """Validation functions for system design assessments and sharing permissions."""
 
-from typing import List, Tuple, Optional
 from app.models.request_models import AssessmentRequest, SystemComponent
 from app.models.diagram_models import Permission
 from app.services.dynamodb_service import dynamodb_service
 
 
 def validate_system_components(
-    components: List[SystemComponent],
-) -> Tuple[bool, List[str]]:
+    components: list[SystemComponent],
+) -> tuple[bool, list[str]]:
     """
     Validate system components for basic architectural principles
     Returns (is_valid, list_of_issues)
     """
-    issues = []
+    issues: list[str] = []
 
     if not components:
         return False, ["No components provided for assessment"]
@@ -43,12 +42,12 @@ def validate_system_components(
     return len(issues) == 0, issues
 
 
-def validate_connections(request: AssessmentRequest) -> Tuple[bool, List[str]]:
+def validate_connections(request: AssessmentRequest) -> tuple[bool, list[str]]:
     """
     Validate system connections for consistency
     Returns (is_valid, list_of_issues)
     """
-    issues = []
+    issues: list[str] = []
 
     if not request.connections:
         return True, []  # No connections to validate
@@ -62,6 +61,7 @@ def validate_connections(request: AssessmentRequest) -> Tuple[bool, List[str]]:
                 f"Connection source '{conn.source}' does not exist in components"
             )
 
+        if conn.target not in component_ids:
             issues.append(
                 f"Connection target '{conn.target}' does not exist in components"
             )
@@ -71,7 +71,7 @@ def validate_connections(request: AssessmentRequest) -> Tuple[bool, List[str]]:
 
 def validate_sharing_permission(
     user_id: str, diagram_id: str, required_permission: Permission = Permission.READ
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """
     Validate if a user has the required permission to access a diagram.
 
@@ -95,7 +95,7 @@ def validate_sharing_permission(
 
 def validate_diagram_access(
     user_id: str, diagram_id: str, action: str = "access"
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """
     Validate if a user can perform an action on a diagram.
 
@@ -110,7 +110,7 @@ def validate_diagram_access(
 
 def validate_collaborator_limit(
     diagram_id: str, owner_id: str, max_collaborators: int = 50
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """
     Validate that the diagram hasn't exceeded the maximum number of collaborators.
 
