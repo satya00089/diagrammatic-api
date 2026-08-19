@@ -15,7 +15,9 @@ python-dotenv>=1.0.0
 # Authentication & Security
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
-bcrypt>=4.0.1
+# passlib 1.7.4 is incompatible with bcrypt 5.x: its backend self-test passes
+# a >72-byte probe and bcrypt 5 raises ValueError during password verification.
+bcrypt>=4.0.1,<5.0.0
 python-multipart>=0.0.6
 email-validator>=2.0.0
 

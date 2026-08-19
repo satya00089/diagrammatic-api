@@ -177,6 +177,15 @@ async def resend_verification(request: ResendVerificationRequest):
 @router.post("/auth/login", response_model=AuthResponse)
 async def login(request: LoginRequest):
     """Authenticate user and get JWT token."""
+    # Keep login aligned with signup and prevent bcrypt from receiving a
+    # password it cannot process.  This must run before verification so an
+    # invalid oversized password returns a client error rather than a 500.
+    if len(request.password.encode("utf-8")) > 72:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is too long. Please use 72 bytes or fewer.",
+        )
+
     # Get user by email
     user = dynamodb_service.get_user_by_email(request.email)
     if not user:
