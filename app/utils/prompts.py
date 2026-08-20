@@ -1,6 +1,7 @@
 """Utility functions to generate prompts for system design assessment."""
 
 import re
+from typing import List
 
 from app.models.request_models import AssessmentRequest
 
@@ -56,7 +57,7 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
         )
 
     # Enhanced component description with detailed properties analysis
-    components_text_parts = []
+    components_text_parts: List[str] = []
     for comp in request.components:
         comp_desc = f'- **{comp.type.value.upper()}**: "{comp.label}"'
 
@@ -81,7 +82,7 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
     components_text = "\n".join(components_text_parts)
 
     # Enhanced connection descriptions with reasoning
-    conn_parts = []
+    conn_parts: List[str] = []
     if request.connections:
         for conn in request.connections:
             conn_desc = f"- **{conn.source} → {conn.target}**"

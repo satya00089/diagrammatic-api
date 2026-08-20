@@ -3,6 +3,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Any, Dict, List, cast
 
 from fastapi import APIRouter, HTTPException, status, Header
 
@@ -20,16 +21,17 @@ DATA_DIR = BASE_DIR / "diagrammatic-data" / "learning-paths"
 SAMPLE_FILE = DATA_DIR / "learning-paths.json"
 
 
-def _read_sample():
+def _read_sample() -> Dict[str, Any] | None:
     if not SAMPLE_FILE.exists():
         logger.warning("Learning path sample file not found: %s", SAMPLE_FILE)
         return None
     with SAMPLE_FILE.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+        data = json.load(fh)
+    return cast(Dict[str, Any], data) if isinstance(data, dict) else None
 
 
 @router.get("/learning-paths", summary="List available learning paths")
-async def list_learning_paths():
+async def list_learning_paths() -> List[Dict[str, Any]]:
     try:
         data = _read_sample()
         if not data:
@@ -41,7 +43,7 @@ async def list_learning_paths():
 
 
 @router.get("/learning-paths/{slug}", summary="Get learning path by slug")
-async def get_learning_path(slug: str):
+async def get_learning_path(slug: str) -> Dict[str, Any]:
     try:
         data = _read_sample()
         if not data or data.get("slug") != slug:
@@ -78,14 +80,20 @@ async def get_progress(path_id: str, authorization: str | None = Header(None)):
     if not isinstance(user_id, str) or not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
-    prefs = dynamodb_service.get_user_preferences(user_id) or {}
-    learning_progress = prefs.get("learningProgress") or {}
+    prefs: Dict[str, Any] = dynamodb_service.get_user_preferences(user_id) or {}
+    learning_progress = cast(
+        Dict[str, List[str]], prefs.get("learningProgress") or {}
+    )
     completed = learning_progress.get(path_id, [])
     return {"completed": completed}
 
 
 @router.post("/learning-paths/{path_id}/progress", summary="Record user progress")
-async def post_progress(path_id: str, payload: dict, authorization: str | None = Header(None)):
+async def post_progress(
+    path_id: str,
+    payload: Dict[str, Any],
+    authorization: str | None = Header(None),
+) -> Dict[str, Any]:
     """Persist the authenticated user's progress for the given learning path.
 
     Payload should be a JSON object with a `completed` field containing an
@@ -106,14 +114,20 @@ async def post_progress(path_id: str, payload: dict, authorization: str | None =
     if not isinstance(user_id, str) or not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
-    if not isinstance(payload, dict) or "completed" not in payload:
+    raw_completed_value = payload.get("completed")
+    if not isinstance(raw_completed_value, list):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payload: expected { completed: string[] }")
+    raw_completed = cast(List[Any], raw_completed_value)
+    if not all(isinstance(item, str) for item in raw_completed):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payload: expected { completed: string[] }")
 
-    completed = payload.get("completed") or []
+    completed: List[str] = cast(List[str], raw_completed)
 
     # Merge into existing preferences
-    prefs = dynamodb_service.get_user_preferences(user_id) or {}
-    learning_progress = prefs.get("learningProgress", {})
+    prefs: Dict[str, Any] = dynamodb_service.get_user_preferences(user_id) or {}
+    learning_progress = cast(
+        Dict[str, List[str]], prefs.get("learningProgress", {})
+    )
     learning_progress[path_id] = completed
 
     # Persist preferences back to DynamoDB

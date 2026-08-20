@@ -35,11 +35,11 @@ class ContextAwareEnricher(IRecommendationEnricher):
         Returns:
             Enriched recommendations
         """
-        enriched = []
+        enriched: List[Dict[str, Any]] = []
 
         for rec in recommendations:
             # Ensure all required fields have values
-            enriched_rec = {
+            enriched_rec: Dict[str, Any] = {
                 "id": rec.get("id", f"rec-{int(time.time() * 1000)}"),
                 "title": rec.get("title", "Untitled Recommendation"),
                 "description": rec.get("description", ""),

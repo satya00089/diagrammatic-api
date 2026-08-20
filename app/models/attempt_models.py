@@ -1,6 +1,6 @@
 """Models for problem attempt tracking."""
 
-from typing import Optional, List, Any
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -16,7 +16,9 @@ class AttemptCreate(BaseModel):
     elapsedTime: int = Field(
         default=0, description="Time spent on the problem in seconds"
     )
-    lastAssessment: Optional[dict] = Field(None, description="Latest assessment result")
+    lastAssessment: Optional[Dict[str, Any]] = Field(
+        None, description="Latest assessment result"
+    )
 
 
 class AttemptUpdate(BaseModel):
@@ -25,7 +27,7 @@ class AttemptUpdate(BaseModel):
     nodes: Optional[List[Any]] = None
     edges: Optional[List[Any]] = None
     elapsedTime: Optional[int] = None
-    lastAssessment: Optional[dict] = None
+    lastAssessment: Optional[Dict[str, Any]] = None
 
 
 class AttemptResponse(BaseModel):
@@ -44,7 +46,9 @@ class AttemptResponse(BaseModel):
         default_factory=list, description="Canvas edges from attempt"
     )
     elapsedTime: int = Field(default=0, description="Total time spent in seconds")
-    lastAssessment: Optional[dict] = Field(None, description="Latest assessment result")
+    lastAssessment: Optional[Dict[str, Any]] = Field(
+        None, description="Latest assessment result"
+    )
     assessmentCount: int = Field(default=0, description="Number of assessments run")
     createdAt: str = Field(..., description="When the attempt was first created")
     updatedAt: str = Field(..., description="When the attempt was last updated")
@@ -80,7 +84,7 @@ class PublicSolutionResponse(BaseModel):
     category: Optional[str] = None
     nodes: List[Any] = Field(default_factory=list)
     edges: List[Any] = Field(default_factory=list)
-    lastAssessment: Optional[dict] = None
+    lastAssessment: Optional[Dict[str, Any]] = None
     authorName: Optional[str] = None
     authorPicture: Optional[str] = None
     publishedAt: Optional[str] = None

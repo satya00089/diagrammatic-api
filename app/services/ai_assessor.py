@@ -15,6 +15,7 @@ from app.models.response_models import (
     AssessmentResponse,
     FeedbackCategory,
     FeedbackType,
+    FindingSeverity,
     ReviewFinding,
     ScoreBreakdown,
     ValidationFeedback,
@@ -429,7 +430,7 @@ class AIAssessorService:
                         "Retry the assessment when the review service is available before treating "
                         "this score as design feedback."
                     ),
-                    severity="important",
+                    severity=FindingSeverity.IMPORTANT,
                 )
             ],
             strengths=["Basic architecture components present"],

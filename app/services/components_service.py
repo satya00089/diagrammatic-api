@@ -18,7 +18,7 @@ class ComponentsService:
 
     def __init__(self):
         """Initialize DynamoDB client and table"""
-        self.dynamodb: DynamoDBServiceResource = boto3.resource(
+        self.dynamodb: DynamoDBServiceResource = boto3.resource(  # pyright: ignore[reportUnknownMemberType]
             "dynamodb",
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,

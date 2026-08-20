@@ -1,6 +1,6 @@
 """Models for system design assessment responses."""
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, cast
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -90,7 +90,9 @@ class AssessmentResponse(BaseModel):
     scores: ScoreBreakdown
     feedback: List[ValidationFeedback]
     summary: Optional[str] = None
-    findings: List[ReviewFinding] = Field(default_factory=list)
+    findings: List[ReviewFinding] = Field(
+        default_factory=lambda: cast(List[ReviewFinding], [])
+    )
     strengths: List[str]
     improvements: List[str]
     missing_components: List[str]

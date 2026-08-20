@@ -1,28 +1,16 @@
 """Router for analytics event ingestion."""
 
-import hashlib
-import hmac
 import logging
+from typing import Dict
 
 from fastapi import APIRouter, BackgroundTasks, Request, status
 
 from app.models.analytics_models import AnalyticsEventBatch
 from app.services.s3_analytics_aggregator import s3_analytics_aggregator
-from app.utils.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _pseudonymize_user(user_id: str) -> str:
-    # Left for compatibility; aggregated pipeline will not use pseudonymized ids
-    settings = get_settings()
-    secret = getattr(settings, "analytics_hmac_secret", None)
-    if secret:
-        return hmac.new(secret.encode("utf-8"), user_id.encode("utf-8"), hashlib.sha256).hexdigest()
-    logger.debug("analytics_hmac_secret not configured; pseudonymization skipped")
-    return user_id
 
 
 @router.post(
@@ -35,7 +23,7 @@ async def ingest_analytics_batch(
     batch: AnalyticsEventBatch,
     request: Request,
     background_tasks: BackgroundTasks,
-) -> dict:
+) -> Dict[str, int]:
     """Accept a batch of analytics events and queue an async S3 write."""
     if not batch.events:
         return {"accepted": 0}
@@ -58,6 +46,6 @@ async def ingest_analytics_event(
     batch: AnalyticsEventBatch,
     request: Request,
     background_tasks: BackgroundTasks,
-) -> dict:
+) -> Dict[str, int]:
     # Reuse batch handler; allows clients to POST single-event batches
     return await ingest_analytics_batch(batch, request, background_tasks)

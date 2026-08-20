@@ -1,6 +1,6 @@
 """Authentication related Pydantic models."""
 
-from typing import Optional, List, Any
+from typing import Any, Dict, List, Optional, cast
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
@@ -45,7 +45,7 @@ class UserResponse(BaseModel):
     email: str
     name: Optional[str] = None
     picture: Optional[str] = None
-    preferences: Optional[dict] = None
+    preferences: Optional[Dict[str, Any]] = None
     emailVerified: bool = False
     createdAt: str
 
@@ -78,7 +78,7 @@ class User(BaseModel):
     name: Optional[str] = None
     picture: Optional[str] = None
     googleId: Optional[str] = None
-    preferences: Optional[dict] = None
+    preferences: Optional[Dict[str, Any]] = None
     emailVerified: bool = False
     verificationTokenHash: Optional[str] = None
     verificationExpiresAt: Optional[str] = None
@@ -112,7 +112,8 @@ class UserPreferences(BaseModel):
             return None
         # Already a list -> ensure string items
         if isinstance(v, list):
-            return [str(x) for x in v if x is not None]
+            values = cast(List[Any], v)
+            return [str(x) for x in values if x is not None]
 
         # Empty string -> treat as None
         if isinstance(v, str):
@@ -125,12 +126,13 @@ class UserPreferences(BaseModel):
 
         # If dict-like (e.g., option objects), try common keys
         if isinstance(v, dict):
+            values = cast(Dict[str, Any], v)
             for key in ("value", "label", "id", "name"):
-                val = v.get(key)
+                val = values.get(key)
                 if isinstance(val, str) and val.strip():
                     return [val.strip()]
             try:
-                return [str(v)]
+                return [str(values)]
             except Exception:
                 return None
 

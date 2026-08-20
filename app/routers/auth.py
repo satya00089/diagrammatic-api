@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import secrets
-from typing import Any, Dict
+from typing import Annotated, Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -311,22 +311,28 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
 
 
 @router.get("/auth/me/preferences", response_model=UserPreferences)
-async def get_my_preferences(current_user: Dict[str, Any] = Depends(get_current_user)):
+async def get_my_preferences(
+    current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
+) -> UserPreferences:
     """Get current authenticated user's preferences."""
     user = dynamodb_service.get_user_by_id(current_user["user_id"])
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    prefs = getattr(user, "preferences", None) or {}
-    return prefs
+    prefs: Dict[str, Any] = getattr(user, "preferences", None) or {}
+    return UserPreferences.model_validate(prefs)
 
 
 @router.patch("/auth/me/preferences", response_model=UserPreferences)
 async def update_my_preferences(
-    prefs: UserPreferences, current_user: Dict[str, Any] = Depends(get_current_user)
-):
+    prefs: UserPreferences,
+    current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
+) -> UserPreferences:
     """Update preferences for the current authenticated user."""
-    updated = dynamodb_service.update_user_preferences(current_user["user_id"], prefs.dict(exclude_none=True))
+    updated = dynamodb_service.update_user_preferences(
+        current_user["user_id"], prefs.model_dump(exclude_none=True)
+    )
     if not updated:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update preferences")
-    return getattr(updated, "preferences", {})
+    updated_preferences: Dict[str, Any] = getattr(updated, "preferences", None) or {}
+    return UserPreferences.model_validate(updated_preferences)

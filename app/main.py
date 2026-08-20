@@ -115,8 +115,8 @@ async def health_check():
     """Health check endpoint."""
     try:
         # Test DynamoDB connection by fetching problems
-        problems = dynamodb_service.get_all_problems()
-        healthy = problems is not None
+        dynamodb_service.get_all_problems()
+        healthy = True
     except Exception:
         healthy = False
     return {"status": "healthy" if healthy else "degraded", "database": "dynamodb"}

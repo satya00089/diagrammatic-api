@@ -1,11 +1,12 @@
 """Diagrams router for CRUD operations on diagrams."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.models.diagram_models import (
     DiagramCreate,
+    Diagram,
     DiagramUpdate,
     DiagramResponse,
     ShareRequest,
@@ -23,7 +24,7 @@ router = APIRouter()
 DIAGRAM_NOT_FOUND = "Diagram not found"
 
 
-def enrich_diagram_response(diagram, current_user_id: str) -> DiagramResponse:
+def enrich_diagram_response(diagram: Diagram, current_user_id: str) -> DiagramResponse:
     """Enrich diagram with ownership and permission information."""
     is_owner = diagram.userId == current_user_id
 
@@ -252,6 +253,7 @@ async def share_diagram(
     existing_collaborator = next(
         (c for c in collaborators if c.userId == share_user.id), None
     )
+    collaborator: Optional[Collaborator] = None
 
     if existing_collaborator:
         # Update permission if different

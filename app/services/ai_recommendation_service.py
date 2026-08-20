@@ -11,7 +11,7 @@ Implementation:
 import copy
 import json
 import time
-from typing import Optional, TypeAlias, cast
+from typing import Any, Dict, List, Optional, TypeAlias, cast
 
 from openai import AsyncOpenAI
 from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
@@ -35,7 +35,7 @@ from app.services.confidence_based_filter import ConfidenceBasedFilter
 from app.services.context_aware_enricher import ContextAwareEnricher
 
 
-JsonObject: TypeAlias = dict[str, object]
+JsonObject: TypeAlias = Dict[str, Any]
 
 
 class AIRecommendationService:
@@ -131,12 +131,14 @@ class AIRecommendationService:
             raw_recommendations = ai_result.get("recommendations", [])
             if not isinstance(raw_recommendations, list):
                 raise ValueError("AI response field 'recommendations' must be a list")
-            raw_items = cast(list[object], raw_recommendations)
-            recommendation_dicts = [
-                cast(dict[str, object], item)
-                for item in raw_items
-                if isinstance(item, dict) and all(isinstance(key, str) for key in item)
-            ]
+            raw_items = cast(List[Any], raw_recommendations)
+            recommendation_dicts: List[Dict[str, Any]] = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                raw_item = cast(Dict[Any, Any], item)
+                if all(isinstance(key, str) for key in raw_item):
+                    recommendation_dicts.append(cast(Dict[str, Any], raw_item))
             total_count = len(raw_items)
 
             # Use injected filter for high precision
@@ -204,10 +206,12 @@ class AIRecommendationService:
         """
         # Prompt utilities return nested mutable data. Copy it so one failed
         # request cannot modify the fallback returned to later requests.
-        fallback = copy.deepcopy(get_fallback_recommendations())
+        fallback: Dict[str, Any] = copy.deepcopy(get_fallback_recommendations())
 
         # Add error context to first recommendation if any
-        recommendations = fallback.get("recommendations", [])
+        recommendations: List[Dict[str, Any]] = cast(
+            List[Dict[str, Any]], fallback.get("recommendations", [])
+        )
         if recommendations:
             recommendations[0]["reasoning"] = (
                 "AI recommendations are temporarily unavailable; "

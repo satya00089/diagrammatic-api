@@ -1,6 +1,7 @@
 """Router for canvas event log ingestion (ML training data collection)."""
 
 import logging
+from typing import Dict
 
 from fastapi import APIRouter, BackgroundTasks, status
 
@@ -30,7 +31,7 @@ router = APIRouter()
 async def ingest_event_batch(
     batch: CanvasEventBatch,
     background_tasks: BackgroundTasks,
-) -> dict:
+) -> Dict[str, int]:
     """Accept a batch of canvas events and queue an async S3 write."""
     if not batch.events:
         return {"accepted": 0}
