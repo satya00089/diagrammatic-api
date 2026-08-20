@@ -825,17 +825,10 @@ class DynamoDBService:
 
             item = response.get("Item")
             if item:
-                print(
-                    f"Retrieved item from DynamoDB: lastAssessment = {item.get('lastAssessment')}"
-                )
                 item_float: Dict[str, Any] = convert_decimal_to_float(item)
-                print(
-                    f"After decimal conversion: lastAssessment = {item_float.get('lastAssessment')}"
-                )
                 # Add composite ID for frontend compatibility
                 item_float["id"] = f"{user_id}#{problem_id}"
                 result = AttemptResponse(**item_float)
-                print(f"AttemptResponse: lastAssessment = {result.lastAssessment}")
                 return result
 
             return None

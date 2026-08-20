@@ -2,6 +2,7 @@
 
 from typing import Mapping, TypeAlias, TypedDict, cast
 import json
+import logging
 import re
 import time
 
@@ -10,15 +11,19 @@ from openai.types.chat.completion_create_params import CompletionCreateParamsNon
 
 from app.models.request_models import AssessmentRequest
 from app.models.response_models import (
+    AssessmentSource,
     AssessmentResponse,
     FeedbackCategory,
     FeedbackType,
+    ReviewFinding,
     ScoreBreakdown,
     ValidationFeedback,
 )
 from app.utils.prompts import get_assessment_prompt
 from app.utils.config import get_settings
 
+
+logger = logging.getLogger(__name__)
 
 JsonObject: TypeAlias = dict[str, object]
 
@@ -96,6 +101,16 @@ class AIAssessorService:
         """Assess the system design using AI and fallback to rule-based if needed."""
         start_time = time.time()
 
+        logger.info(
+            "AI assessment started model=%s max_completion_tokens=%s components=%s "
+            "connections=%s has_problem=%s",
+            self.settings.openai_model,
+            self.settings.openai_max_tokens,
+            len(request.components),
+            len(request.connections or []),
+            request.problem is not None,
+        )
+
         # Pre-compute coverage so we can post-filter AI feedback
         coverage = self._compute_coverage(request)
 
@@ -130,8 +145,37 @@ class AIAssessorService:
                 **completion_options,
             )
 
+            choice = response.choices[0] if response.choices else None
+            message = choice.message if choice is not None else None
+            content = message.content if message is not None else None
+            usage = response.usage
+            usage_details = getattr(usage, "completion_tokens_details", None)
+            reasoning_tokens = getattr(usage_details, "reasoning_tokens", None)
+            finish_reason = choice.finish_reason if choice is not None else None
+            refusal_present = bool(getattr(message, "refusal", None))
+
+            logger.info(
+                "AI assessment provider response model=%s finish_reason=%s "
+                "prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s "
+                "content_length=%s refusal_present=%s elapsed_ms=%s",
+                self.settings.openai_model,
+                finish_reason,
+                getattr(usage, "prompt_tokens", None),
+                getattr(usage, "completion_tokens", None),
+                reasoning_tokens,
+                len(content or ""),
+                refusal_present,
+                int((time.time() - start_time) * 1000),
+            )
+
+            if not content:
+                raise ValueError(
+                    "AI returned no content "
+                    f"(finish_reason={finish_reason}, refusal_present={refusal_present})"
+                )
+
             # Parse AI response
-            ai_result = self._parse_json_response(response.choices[0].message.content)
+            ai_result = self._parse_json_response(content)
 
             # Transform to response model
             assessment = self._transform_ai_response(ai_result)
@@ -143,9 +187,23 @@ class AIAssessorService:
             processing_time = int((time.time() - start_time) * 1000)
             assessment.processing_time_ms = processing_time
 
+            logger.info(
+                "AI assessment succeeded score=%s findings=%s elapsed_ms=%s",
+                assessment.overall_score,
+                len(assessment.findings),
+                processing_time,
+            )
+
             return assessment
 
         except Exception as e:
+            logger.warning(
+                "AI assessment failed; using rule-based fallback error_type=%s "
+                "error=%s elapsed_ms=%s",
+                type(e).__name__,
+                str(e)[:500],
+                int((time.time() - start_time) * 1000),
+            )
             # Fallback to rule-based assessment
             return self._fallback_assessment(
                 request,
@@ -274,11 +332,25 @@ class AIAssessorService:
         else:
             detailed_analysis = None
 
+        raw_findings = ai_result.get("findings", [])
+        if not isinstance(raw_findings, list):
+            raise ValueError("AI response field 'findings' must be a list")
+        findings = [
+            ReviewFinding.model_validate(item)
+            for item in cast(list[object], raw_findings)
+        ]
+
+        summary = ai_result.get("summary")
+        if summary is not None and not isinstance(summary, str):
+            raise ValueError("AI response field 'summary' must be a string")
+
         return AssessmentResponse(
             is_valid=overall_score >= 50,
             overall_score=overall_score,
             scores=scores,
             feedback=feedback,
+            summary=summary,
+            findings=findings,
             strengths=string_list("strengths"),
             improvements=string_list("improvements"),
             missing_components=string_list("missing_components"),
@@ -287,6 +359,7 @@ class AIAssessorService:
             suggestions=string_list("suggestions"),
             detailed_analysis=detailed_analysis,
             interview_questions=string_list("interview_questions"),
+            source=AssessmentSource.AI,
         )
 
     def _fallback_assessment(
@@ -341,6 +414,24 @@ class AIAssessorService:
                     category=FeedbackCategory.MAINTAINABILITY,
                 )
             ],
+            summary=(
+                "The AI reviewer was unavailable, so this result is a basic structural check "
+                "of the diagram rather than a full architecture review."
+            ),
+            findings=[
+                ReviewFinding(
+                    title="Full architecture review unavailable",
+                    explanation=(
+                        "This assessment could not evaluate the design against the problem context "
+                        "and production failure modes with the AI reviewer."
+                    ),
+                    recommendation=(
+                        "Retry the assessment when the review service is available before treating "
+                        "this score as design feedback."
+                    ),
+                    severity="important",
+                )
+            ],
             strengths=["Basic architecture components present"],
             improvements=[
                 "Add detailed component documentation and connection reasoning"
@@ -355,4 +446,5 @@ class AIAssessorService:
                 "Provide detailed component descriptions",
             ],
             processing_time_ms=processing_time_ms,
+            source=AssessmentSource.RULE_BASED,
         )

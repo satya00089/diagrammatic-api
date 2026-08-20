@@ -23,8 +23,6 @@ async def create_or_update_attempt(
     """Create or update a problem attempt (requires authentication)."""
     user_id = current_user["user_id"]
 
-    print(f"Received attempt request - lastAssessment: {request.lastAssessment}")
-
     attempt = dynamodb_service.create_or_update_attempt(
         user_id=user_id,
         problem_id=request.problemId,

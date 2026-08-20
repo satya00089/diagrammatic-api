@@ -14,6 +14,22 @@ class FeedbackType(str, Enum):
     INFO = "info"
 
 
+class FindingSeverity(str, Enum):
+    """Severity used for actionable architecture findings."""
+
+    CRITICAL = "critical"
+    IMPORTANT = "important"
+    IMPROVEMENT = "improvement"
+    POSITIVE = "positive"
+
+
+class AssessmentSource(str, Enum):
+    """How the assessment was produced."""
+
+    AI = "ai"
+    RULE_BASED = "rule_based"
+
+
 class FeedbackCategory(str, Enum):
     """Enumeration for feedback categories."""
 
@@ -40,6 +56,15 @@ class ValidationFeedback(BaseModel):
     priority: Optional[int] = Field(default=1, ge=1, le=5)
 
 
+class ReviewFinding(BaseModel):
+    """A structured finding that explains and prioritises an observation."""
+
+    title: str = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+    recommendation: Optional[str] = None
+    severity: FindingSeverity = FindingSeverity.IMPROVEMENT
+
+
 class ScoreBreakdown(BaseModel):
     """Model for detailed score breakdown."""
 
@@ -64,6 +89,8 @@ class AssessmentResponse(BaseModel):
     overall_score: int = Field(ge=0, le=100)
     scores: ScoreBreakdown
     feedback: List[ValidationFeedback]
+    summary: Optional[str] = None
+    findings: List[ReviewFinding] = Field(default_factory=list)
     strengths: List[str]
     improvements: List[str]
     missing_components: List[str]
@@ -74,3 +101,4 @@ class AssessmentResponse(BaseModel):
     interview_questions: Optional[List[str]] = None
     assessment_id: Optional[str] = None
     processing_time_ms: Optional[int] = None
+    source: AssessmentSource = AssessmentSource.AI
