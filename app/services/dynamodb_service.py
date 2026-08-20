@@ -507,7 +507,7 @@ class DynamoDBService:
                 UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
                 ExpressionAttributeValues={
                     ":collaborators": [
-                        convert_floats_to_decimal(c.dict())
+                        convert_floats_to_decimal(c.model_dump())
                         for c in diagram.collaborators
                     ],
                     ":updated": datetime.now(timezone.utc).isoformat(),
@@ -538,7 +538,7 @@ class DynamoDBService:
                 UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
                 ExpressionAttributeValues={
                     ":collaborators": [
-                        convert_floats_to_decimal(c.dict())
+                        convert_floats_to_decimal(c.model_dump())
                         for c in diagram.collaborators
                     ],
                     ":updated": datetime.now(timezone.utc).isoformat(),
@@ -576,7 +576,7 @@ class DynamoDBService:
                 UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
                 ExpressionAttributeValues={
                     ":collaborators": [
-                        convert_floats_to_decimal(c.dict())
+                        convert_floats_to_decimal(c.model_dump())
                         for c in diagram.collaborators
                     ],
                     ":updated": datetime.now(timezone.utc).isoformat(),
@@ -627,7 +627,7 @@ class DynamoDBService:
     def get_shared_diagrams_for_user(self, user_id: str) -> List[Diagram]:
         """Get all diagrams shared with a user."""
         try:
-            shared_diagrams = []
+            shared_diagrams: List[Diagram] = []
 
             # Scan all diagrams to find those where user is a collaborator
             response = self.diagrams_table.scan()
@@ -739,7 +739,7 @@ class DynamoDBService:
         nodes: List[Any],
         edges: List[Any],
         elapsed_time: int = 0,
-        last_assessment: Optional[dict] = None,
+        last_assessment: Optional[Dict[str, Any]] = None,
     ) -> AttemptResponse:
         """Create or update a problem attempt (upsert operation)."""
         try:
@@ -760,7 +760,10 @@ class DynamoDBService:
             preserved_assessment = None
             if existing_attempt:
                 assessment_count = existing_attempt.assessmentCount
-                preserved_assessment = existing_attempt.lastAssessment
+                preserved_assessment = cast(
+                    Optional[Dict[str, Any]],
+                    existing_attempt.model_dump().get("lastAssessment"),
+                )
             if last_assessment:
                 assessment_count += 1
                 preserved_assessment = assessment_decimal
@@ -985,10 +988,12 @@ class DynamoDBService:
             )
             items = response.get("Items", [])
 
-            entries = []
+            entries: List[LeaderboardEntry] = []
             for item in items:
                 item_float = convert_decimal_to_float(item)
-                assessment = item_float.get("lastAssessment") or {}
+                assessment = cast(
+                    Dict[str, Any], item_float.get("lastAssessment") or {}
+                )
                 score = int(assessment.get("score", 0))
                 uid = item_float.get("userId", "")
                 pid = item_float.get("problemId", "")
