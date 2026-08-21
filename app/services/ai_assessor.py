@@ -7,7 +7,11 @@ import re
 import time
 
 from openai import AsyncOpenAI
-from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
+from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
+from openai.types.shared.reasoning_effort import ReasoningEffort
+from openai.types.shared_params.response_format_json_object import (
+    ResponseFormatJSONObject,
+)
 
 from app.models.request_models import AssessmentRequest
 from app.models.response_models import (
@@ -106,7 +110,7 @@ class AIAssessorService:
             "AI assessment started model=%s max_completion_tokens=%s components=%s "
             "connections=%s has_problem=%s",
             self.settings.openai_model,
-            self.settings.openai_max_tokens,
+            self.settings.openai_assessment_max_tokens,
             len(request.components),
             len(request.connections or []),
             request.problem is not None,
@@ -121,30 +125,52 @@ class AIAssessorService:
 
             # GPT-5/o-series reasoning models reject sampling temperature.
             # Keep the legacy temperature setting for non-reasoning models.
-            completion_options: CompletionCreateParamsNonStreaming = {
-                "model": self.settings.openai_model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a senior system architect and technical lead with 15+ years of experience "
-                            "in distributed systems, microservices, and cloud architecture. "
-                            "You provide tough but fair assessments. "
-                            "When the design meets the 70% description-coverage threshold stated in the prompt, "
+            messages: list[ChatCompletionMessageParam] = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior system architect and technical lead with 15+ years of experience "
+                        "in distributed systems, microservices, and cloud architecture. "
+                        "You provide tough but fair assessments. "
+                        "When the design meets the 70% description-coverage threshold stated in the prompt, "
                             "do not penalise missing descriptions — focus on architecture quality instead."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "max_completion_tokens": self.settings.openai_max_tokens,
-                "response_format": {"type": "json_object"},
-            }
-            if not self.settings.openai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
-                completion_options["temperature"] = self.settings.openai_temperature
-
-            response = await self.client.chat.completions.create(
-                **completion_options,
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            response_format: ResponseFormatJSONObject = {"type": "json_object"}
+            is_reasoning_model = self.settings.openai_model.lower().startswith(
+                ("gpt-5", "o1", "o3", "o4")
             )
+            if is_reasoning_model:
+                response = await self.client.chat.completions.create(
+                    model=self.settings.openai_model,
+                    messages=messages,
+                    max_completion_tokens=self.settings.openai_assessment_max_tokens,
+                    response_format=response_format,
+                    reasoning_effort=cast(
+                        ReasoningEffort,
+                        self.settings.openai_assessment_reasoning_effort,
+                    ),
+                )
+            else:
+                response = await self.client.chat.completions.create(
+                    model=self.settings.openai_model,
+                    messages=messages,
+                    max_completion_tokens=self.settings.openai_assessment_max_tokens,
+                    response_format=response_format,
+                    temperature=self.settings.openai_temperature,
+                )
+
+            # Keep the complete provider payload available during local
+            # debugging. This is intentionally disabled outside debug mode
+            # because the response contains the submitted design context.
+            if self.settings.debug:
+                raw_response: str = response.model_dump_json(indent=2)
+                logger.debug(
+                    "Raw OpenAI assessment response:\n%s",
+                    raw_response,
+                )
 
             choice = response.choices[0] if response.choices else None
             message = choice.message if choice is not None else None
