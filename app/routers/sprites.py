@@ -9,8 +9,9 @@ import re
 import boto3
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
+from mypy_boto3_s3 import S3Client
 
-from app.utils.config import get_settings
+from app.utils.config import Settings, get_settings
 
 router = APIRouter(prefix="/api/sprites", tags=["sprites"])
 
@@ -19,8 +20,8 @@ ALLOWED_PROVIDERS = {"aws", "azure", "gcp", "kubernetes"}
 _SHEET_RE = re.compile(r'^[a-z]+-\d+\.png$')
 
 
-def _s3_client(settings):
-    return boto3.client(
+def _s3_client(settings: Settings) -> S3Client:
+    return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "s3",
         region_name=settings.aws_region,
         aws_access_key_id=settings.aws_access_key_id,

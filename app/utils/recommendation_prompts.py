@@ -7,11 +7,9 @@ Following SOLID principles:
 - Dependency Inversion: Abstract prompt building from concrete AI service
 """
 
-from typing import List
+from typing import Any, Dict, List
 from app.models.recommendation_models import (
     RecommendationRequest,
-    ComponentInfo,
-    ConnectionInfo,
 )
 
 
@@ -31,7 +29,7 @@ def build_recommendation_prompt(request: RecommendationRequest) -> str:
     Returns:
         A well-structured prompt for the AI model
     """
-    sections = [
+    sections: List[str] = [
         _build_system_role_section(),
         _build_user_intent_section(request),
         _build_canvas_state_section(request),
@@ -103,8 +101,8 @@ def _build_component_details_section(request: RecommendationRequest) -> str:
         return ""
 
     # Group components by type for analysis
-    components_by_type = {}
-    undocumented_components = []
+    components_by_type: Dict[str, int] = {}
+    undocumented_components: List[str] = []
 
     for comp in request.components:
         comp_type = comp.type
@@ -114,7 +112,7 @@ def _build_component_details_section(request: RecommendationRequest) -> str:
             undocumented_components.append(comp.label)
 
     # Build detailed summary
-    details = ["DETAILED COMPONENT ANALYSIS:"]
+    details: List[str] = ["DETAILED COMPONENT ANALYSIS:"]
     details.append("Component Type Distribution:")
     for comp_type, count in sorted(components_by_type.items(), key=lambda x: -x[1]):
         details.append(f"  - {comp_type}: {count}")
@@ -217,7 +215,7 @@ Your recommendations should be:
 5. Specific to the actual context, not generic advice"""
 
 
-def get_fallback_recommendations() -> dict:
+def get_fallback_recommendations() -> Dict[str, Any]:
     """
     Get fallback recommendations when AI is unavailable.
 

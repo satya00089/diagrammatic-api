@@ -2,10 +2,11 @@
 
 import time
 from collections import defaultdict, deque
-from typing import Dict, Deque
+from typing import Deque, Dict
 from fastapi import Request
-from starlette.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -13,14 +14,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     Rate limiting middleware that tracks requests per IP address.
     """
 
-    def __init__(self, app, requests_per_minute: int = 30, trusted_proxy_ips: list[str] | None = None):
+    def __init__(
+        self,
+        app: ASGIApp,
+        requests_per_minute: int = 30,
+        trusted_proxy_ips: list[str] | None = None,
+    ) -> None:
         super().__init__(app)
         self.requests_per_minute = requests_per_minute
         self.trusted_proxy_ips = set(trusted_proxy_ips or [])
         # Store request timestamps per IP
         self.request_history: Dict[str, Deque[float]] = defaultdict(deque)
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         # Get client IP
         client_ip = self._get_client_ip(request)
 
@@ -70,7 +78,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Check if within limit
         return len(ip_requests) < self.requests_per_minute
 
-    def _record_request(self, client_ip: str):
+    def _record_request(self, client_ip: str) -> None:
         """Record a request for the given IP."""
         current_time = time.time()
         self.request_history[client_ip].append(current_time)
@@ -84,7 +92,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         five_minutes_ago = current_time - 300  # 5 minutes ago
 
         # Remove IPs that haven't made requests in the last 5 minutes
-        ips_to_remove = []
+        ips_to_remove: list[str] = []
         for ip, requests in self.request_history.items():
             if not requests or requests[-1] < five_minutes_ago:
                 ips_to_remove.append(ip)

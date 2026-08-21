@@ -34,13 +34,13 @@ class ConfidenceBasedFilter(IRecommendationFilter):
             Filtered list of high-quality recommendations
         """
         # Filter by confidence threshold (HIGH PRECISION)
-        filtered = [
+        filtered: List[Dict[str, Any]] = [
             rec for rec in recommendations if rec.get("confidence", 0.0) >= threshold
         ]
 
         # Remove duplicates by title (case-insensitive)
-        seen_titles = set()
-        unique = []
+        seen_titles: set[str] = set()
+        unique: List[Dict[str, Any]] = []
         for rec in filtered:
             title_lower = rec.get("title", "").lower()
             if title_lower not in seen_titles:

@@ -31,7 +31,7 @@ class S3EventLogger:
     def __init__(self) -> None:
         settings = get_settings()
         self._bucket = settings.analytics_s3_bucket
-        self._client = boto3.client(
+        self._client = boto3.client(  # pyright: ignore[reportUnknownMemberType]
             "s3",
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,

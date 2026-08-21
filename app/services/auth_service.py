@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+from passlib.context import CryptContext  # pyright: ignore[reportMissingTypeStubs]
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 from fastapi import HTTPException, status
@@ -14,7 +14,7 @@ from app.utils.config import get_settings
 settings = get_settings()
 
 # Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context: Any = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class AuthService:

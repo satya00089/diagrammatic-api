@@ -1,6 +1,8 @@
 """Main application file for the Diagrammatic API service."""
 
 from contextlib import asynccontextmanager
+import logging
+import sys
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -29,6 +31,31 @@ from app.services.dynamodb_service import dynamodb_service
 
 # Load settings
 settings = get_settings()
+
+
+def _configure_app_logging(debug: bool) -> None:
+    """Make application logs visible in the terminal and captured stdout."""
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(logging.DEBUG if debug else logging.INFO)
+
+    # Uvicorn normally configures its own loggers, but it does not guarantee
+    # that application loggers have a handler. Attach one so app.* messages
+    # are visible beside the existing startup print statements.
+    if not app_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s",
+                "%Y-%m-%d %H:%M:%S",
+            )
+        )
+        app_logger.addHandler(handler)
+
+    # Prevent duplicate lines when Uvicorn/root logging also has a handler.
+    app_logger.propagate = False
+
+
+_configure_app_logging(settings.debug)
 
 # API version prefix
 API_V1_PREFIX = "/api/v1"
@@ -115,8 +142,8 @@ async def health_check():
     """Health check endpoint."""
     try:
         # Test DynamoDB connection by fetching problems
-        problems = dynamodb_service.get_all_problems()
-        healthy = problems is not None
+        dynamodb_service.get_all_problems()
+        healthy = True
     except Exception:
         healthy = False
     return {"status": "healthy" if healthy else "degraded", "database": "dynamodb"}

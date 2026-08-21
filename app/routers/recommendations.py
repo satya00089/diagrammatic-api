@@ -5,6 +5,8 @@ Provides REST API endpoints for getting context-aware design recommendations.
 Includes proper error handling, validation, and rate limiting.
 """
 
+from typing import Annotated, Any, Dict
+
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import JSONResponse
 
@@ -97,7 +99,7 @@ router = APIRouter()
 )
 async def get_recommendations(
     request: RecommendationRequest,
-    current_user: dict = Depends(get_current_user)
+    current_user: Annotated[Dict[str, Any], Depends(get_current_user)]
 ) -> RecommendationResponse:
     """
     Get AI-powered recommendations for system design improvement.

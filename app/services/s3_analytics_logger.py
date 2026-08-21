@@ -2,10 +2,11 @@
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+from mypy_boto3_s3 import S3Client
 
 from app.models.analytics_models import AnalyticsEvent
 from app.utils.config import get_settings
@@ -24,11 +25,13 @@ class S3AnalyticsLogger:
     with server-captured metadata (ip, user_agent, user_hash).
     """
 
+    _client: S3Client
+
     def __init__(self) -> None:
         settings = get_settings()
         # Use the configured analytics S3 bucket for all S3 writes
         self._bucket = settings.analytics_s3_bucket
-        self._client = boto3.client(
+        self._client = boto3.client(  # pyright: ignore[reportUnknownMemberType]
             "s3",
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,
@@ -69,7 +72,7 @@ class S3AnalyticsLogger:
         # Prepare new JSONL lines
         new_lines = ""
         for e in events:
-            obj: Dict[str, Any] = e.model_dump() if hasattr(e, "model_dump") else e.dict()
+            obj: Dict[str, Any] = e.model_dump()
             # Augment with server-side metadata
             if ip:
                 obj["ip"] = ip

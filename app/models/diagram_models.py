@@ -1,6 +1,6 @@
 """Diagram related Pydantic models."""
 
-from typing import Optional, List, Any
+from typing import Any, Dict, List, Optional, cast
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -71,7 +71,8 @@ class DiagramResponse(BaseModel):
         default=False, description="Whether the diagram is publicly accessible"
     )
     collaborators: List[Collaborator] = Field(
-        default_factory=list, description="List of collaborators with access"
+        default_factory=lambda: cast(List[Collaborator], []),
+        description="List of collaborators with access",
     )
 
     # Ownership and permission fields
@@ -81,7 +82,7 @@ class DiagramResponse(BaseModel):
     permission: Optional[str] = Field(
         default=None, description="Current user's permission level (owner/edit/read)"
     )
-    owner: Optional[dict] = Field(
+    owner: Optional[Dict[str, Any]] = Field(
         default=None, description="Owner information (id, name, email, pictureUrl)"
     )
 
@@ -103,7 +104,9 @@ class Diagram(BaseModel):
     createdAt: str
     updatedAt: str
     isPublic: bool = Field(default=False)
-    collaborators: List[Collaborator] = Field(default_factory=list)
+    collaborators: List[Collaborator] = Field(
+        default_factory=lambda: cast(List[Collaborator], [])
+    )
 
 
 class PublicDiagramResponse(BaseModel):

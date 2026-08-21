@@ -7,7 +7,7 @@ Following SOLID principles:
 - Interface Segregation: Minimal, focused interfaces
 """
 
-from typing import List, Optional, Literal
+from typing import Any, List, Optional, Literal, Dict, cast
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -20,7 +20,7 @@ class ComponentInfo(BaseModel):
     has_description: bool = Field(
         default=False, description="Whether component has a meaningful description"
     )
-    properties: Optional[dict] = Field(default_factory=dict)
+    properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
 class ConnectionInfo(BaseModel):
@@ -80,8 +80,12 @@ class RecommendationRequest(BaseModel):
 
     user_intent: Optional[UserIntentInfo] = None
     canvas_context: CanvasContextInfo
-    components: List[ComponentInfo] = Field(default_factory=list)
-    connections: List[ConnectionInfo] = Field(default_factory=list)
+    components: List[ComponentInfo] = Field(
+        default_factory=lambda: cast(List[ComponentInfo], [])
+    )
+    connections: List[ConnectionInfo] = Field(
+        default_factory=lambda: cast(List[ConnectionInfo], [])
+    )
     max_suggestions: int = Field(
         default=5, ge=1, le=10, description="Maximum number of suggestions to return"
     )
@@ -163,7 +167,7 @@ class RecommendationResponse(BaseModel):
     """
 
     recommendations: List[RecommendationItem] = Field(
-        default_factory=list,
+        default_factory=lambda: cast(List[RecommendationItem], []),
         description="List of recommendations, ordered by priority and confidence",
     )
     total_count: int = Field(

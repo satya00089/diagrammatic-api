@@ -1,12 +1,13 @@
 """Service for aggregating analytics events into daily counters on S3."""
 
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import Any, Dict, List, cast
 import json
 import logging
 
 import boto3
 from botocore.exceptions import ClientError
+from mypy_boto3_s3 import S3Client
 
 from app.models.analytics_models import AnalyticsEvent
 from app.utils.config import get_settings
@@ -28,10 +29,12 @@ class S3AnalyticsAggregator:
     }
     """
 
+    _client: S3Client
+
     def __init__(self) -> None:
         settings = get_settings()
         self._bucket = settings.analytics_s3_bucket
-        self._client = boto3.client(
+        self._client = boto3.client(  # pyright: ignore[reportUnknownMemberType]
             "s3",
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,
@@ -77,8 +80,10 @@ class S3AnalyticsAggregator:
 
         try:
             existing = self._get_existing(key)
-            events_map = existing.get("events", {}) if isinstance(existing, dict) else {}
-            total_events = existing.get("total_events", 0) if isinstance(existing, dict) else 0
+            events_map = cast(
+                Dict[str, Dict[str, int]], existing.get("events", {})
+            )
+            total_events = int(existing.get("total_events", 0))
 
             # Merge batch into existing
             for name, routes in batch_counts.items():

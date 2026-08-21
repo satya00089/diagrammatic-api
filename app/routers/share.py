@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
 from pydantic import BaseModel
 
 from app.models.attempt_models import (
@@ -280,7 +281,7 @@ Generate three things:
 
 Return JSON with keys: linkedinPost, twitterPost, mediumArticle."""
 
-    completion_options = {
+    completion_options: CompletionCreateParamsNonStreaming = {
         "model": settings.openai_model,
         "messages": [
             {"role": "system", "content": "You are a helpful technical content writer. Always respond with valid JSON."},
@@ -295,7 +296,7 @@ Return JSON with keys: linkedinPost, twitterPost, mediumArticle."""
     response = await client.chat.completions.create(**completion_options)
 
     import json
-    result = json.loads(response.choices[0].message.content)
+    result = json.loads(response.choices[0].message.content or "{}")
 
     return ShareArticleResponse(
         linkedinPost=result.get("linkedinPost", ""),

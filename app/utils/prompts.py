@@ -1,6 +1,7 @@
 """Utility functions to generate prompts for system design assessment."""
 
 import re
+from typing import List
 
 from app.models.request_models import AssessmentRequest
 
@@ -56,7 +57,7 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
         )
 
     # Enhanced component description with detailed properties analysis
-    components_text_parts = []
+    components_text_parts: List[str] = []
     for comp in request.components:
         comp_desc = f'- **{comp.type.value.upper()}**: "{comp.label}"'
 
@@ -81,7 +82,7 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
     components_text = "\n".join(components_text_parts)
 
     # Enhanced connection descriptions with reasoning
-    conn_parts = []
+    conn_parts: List[str] = []
     if request.connections:
         for conn in request.connections:
             conn_desc = f"- **{conn.source} → {conn.target}**"
@@ -204,6 +205,7 @@ Rate each aspect from 0-100, considering the problem context, requirements, and 
 Respond with a valid JSON object in this exact structure:
 
 {{
+  "summary": "One concise, design-specific verdict in 1-2 sentences. Do not call the design production-ready unless the evidence supports it.",
   "scores": {{
     "scalability": 75,
     "reliability": 80,
@@ -218,6 +220,14 @@ Respond with a valid JSON object in this exact structure:
     "component_justification": 80,
     "connection_clarity": 75
   }},
+  "findings": [
+    {{
+      "title": "Short, specific finding title",
+      "explanation": "Explain the architectural consequence in this design and why it matters.",
+      "recommendation": "Suggest a reasonable next step without replacing the candidate's design wholesale.",
+      "severity": "critical|important|improvement|positive"
+    }}
+  ],
   "feedback": [
     {{
       "type": "success|warning|error|info",
@@ -267,6 +277,7 @@ Respond with a valid JSON object in this exact structure:
 - Evaluate all 12 dimensions: scalability, reliability, security, maintainability, performance, cost_efficiency, observability, deliverability, requirements_alignment, constraint_compliance, component_justification, connection_clarity
 - Write a `detailed_analysis` entry for EACH of the first 8 dimensions (2-3 sentences each, specific to THIS design — not generic advice)
 - Generate 5-7 `interview_questions` that a technical interviewer would ask about THIS specific design — they must be tailored to the technology choices, architecture decisions, and requirements visible in the submission (NOT generic system design questions)
+- Generate 3-8 `findings` for the most important observations. Each finding must explain why it matters and give a practical next step. Use `positive` for strengths worth preserving, `critical` for likely correctness or availability risks, `important` for material gaps, and `improvement` for lower-risk opportunities.
 - Identify components truly missing from the design given the stated requirements
 - Flag missing or inadequate component descriptions as areas for improvement
 

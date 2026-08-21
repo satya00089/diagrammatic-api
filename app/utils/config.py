@@ -1,6 +1,8 @@
 """Application configuration settings using Pydantic."""
 
 from functools import lru_cache
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationError
 
@@ -12,6 +14,14 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
     openai_model: str = Field("gpt-4o-mini", validation_alias="OPENAI_MODEL")
     openai_max_tokens: int = Field(2000, validation_alias="OPENAI_MAX_TOKENS")
+    openai_assessment_max_tokens: int = Field(
+        6000, validation_alias="OPENAI_ASSESSMENT_MAX_TOKENS"
+    )
+    openai_assessment_reasoning_effort: Literal[
+        "none", "low", "medium", "high", "xhigh", "max"
+    ] = Field(
+        "low", validation_alias="OPENAI_ASSESSMENT_REASONING_EFFORT"
+    )
     openai_temperature: float = Field(0.3, validation_alias="OPENAI_TEMPERATURE")
 
     # API Configuration

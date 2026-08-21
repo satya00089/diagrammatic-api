@@ -4,19 +4,21 @@ Forwards audio transcription requests to the standalone whisper-service,
 so the browser never needs a direct URL to (or credentials for) it.
 """
 
+from typing import Any, Dict
+
 import httpx
 from fastapi import HTTPException
 
-from app.utils.config import get_settings
+from app.utils.config import Settings, get_settings
 
 
 class WhisperService:
-    def __init__(self, settings=None):
+    def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
     async def submit_transcription(
         self, filename: str, content: bytes, content_type: str | None
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """Submit audio to whisper-service and return the job it created."""
         async with httpx.AsyncClient(timeout=30.0) as client:
             files = {"audio": (filename, content, content_type or "audio/webm")}
@@ -35,7 +37,7 @@ class WhisperService:
         resp.raise_for_status()
         return resp.json()
 
-    async def get_job(self, job_id: str) -> dict:
+    async def get_job(self, job_id: str) -> Dict[str, Any]:
         """Poll whisper-service for a transcription job's status/result."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:

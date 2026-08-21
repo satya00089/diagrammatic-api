@@ -3,9 +3,9 @@ Components Router
 API endpoints for component management
 """
 
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.services.components_service import components_service
 
@@ -16,9 +16,9 @@ router = APIRouter(prefix="/api/components", tags=["components"])
 class ComponentsResponse(BaseModel):
     """Response model for component queries"""
 
-    items: list
+    items: List[Dict[str, Any]]
     count: int
-    lastEvaluatedKey: Optional[dict] = None
+    lastEvaluatedKey: Optional[Dict[str, Any]] = None
 
 
 class UsageResponse(BaseModel):
@@ -283,7 +283,7 @@ async def track_usage(component_id: str):
         raise HTTPException(status_code=500, detail=f"Error tracking usage: {str(e)}") from e
 
 
-def _decode_pagination_key(encoded_key: str) -> dict:
+def _decode_pagination_key(encoded_key: str) -> Dict[str, Any]:
     """
     Decode base64 encoded pagination key
 
