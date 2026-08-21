@@ -23,7 +23,6 @@ router = APIRouter()
 
 @router.post(
     "/recommendations",
-    response_model=RecommendationResponse,
     status_code=status.HTTP_200_OK,
     summary="Get AI-powered design recommendations",
     description="""

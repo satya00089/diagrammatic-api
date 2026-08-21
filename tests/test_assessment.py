@@ -151,7 +151,7 @@ def test_fallback_assessment_identifies_that_it_is_not_an_ai_review():
         ]
     )
 
-    result = service._fallback_assessment(request, "provider unavailable")
+    result = service._fallback_assessment(request)
 
     assert result.source == "rule_based"
     assert result.findings[0].severity == "important"

@@ -1,7 +1,7 @@
 """API router for problem-related endpoints."""
 
 import logging
-from typing import Any, List, Optional, Dict, Union
+from typing import Annotated, Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from app.models.problem_models import ProblemSummary, ProblemDetail
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/all-problems", response_model=List[ProblemSummary])
+@router.get("/all-problems")
 async def get_all_problems(
     category: Optional[str] = Query(None, description="Filter by category"),
     difficulty: Optional[str] = Query(
@@ -50,15 +50,15 @@ async def get_all_problems(
         problem_list.sort(key=lambda p: difficulty_order.get(p.difficulty.lower(), 5))
 
         return problem_list
-    except Exception as e:
-        logger.error("Error in get_all_problems: %s", e)
+    except Exception as exc:
+        logger.exception("Error in get_all_problems")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch problems from database",
-        ) from e
+        ) from exc
 
 
-@router.get("/problem/{problem_id}", response_model=ProblemDetail)
+@router.get("/problem/{problem_id}")
 async def get_problem_by_id(problem_id: str) -> ProblemDetail:
     """
     Get a specific problem by ID with full details.
@@ -81,17 +81,17 @@ async def get_problem_by_id(problem_id: str) -> ProblemDetail:
         return ProblemDetail(**problem)
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error in get_problem_by_id: %s", e)
+    except Exception as exc:
+        logger.exception("Error in get_problem_by_id")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch problem from database",
-        ) from e
+        ) from exc
 
 
-@router.get("/problems/attempted", response_model=List[str])
+@router.get("/problems/attempted")
 async def get_attempted_problems(
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
 ) -> List[str]:
     """
     Get list of problem IDs that the user has attempted.
@@ -107,12 +107,12 @@ async def get_attempted_problems(
         problem_ids = [attempt.problemId for attempt in attempts]
 
         return problem_ids
-    except Exception as e:
-        logger.error("Error in get_attempted_problems: %s", e)
+    except Exception as exc:
+        logger.exception("Error in get_attempted_problems")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch attempted problems",
-        ) from e
+        ) from exc
 
 
 @router.get("/problems/health")
@@ -129,9 +129,9 @@ async def problems_health_check() -> Dict[str, Union[str, int]]:
             "connection": "connected",
             "problem_count": len(problems) if problems else 0,
         }
-    except Exception as e:
-        logger.error("Error in problems health check: %s", e)
+    except Exception as exc:
+        logger.exception("Error in problems health check")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Problems service is unavailable",
-        ) from e
+        ) from exc

@@ -29,7 +29,13 @@ def _s3_client(settings: Settings) -> S3Client:
     )
 
 
-@router.get("/{provider}/manifest")
+@router.get(
+    "/{provider}/manifest",
+    responses={
+        404: {"description": "No spritesheet is available for the provider"},
+        502: {"description": "The spritesheet manifest could not be loaded"},
+    },
+)
 async def get_sprite_manifest(provider: str):
     """Return the spritesheet manifest JSON for a cloud provider."""
     settings = get_settings()
@@ -55,7 +61,13 @@ async def get_sprite_manifest(provider: str):
     )
 
 
-@router.get("/{provider}/{sheet_file}")
+@router.get(
+    "/{provider}/{sheet_file}",
+    responses={
+        400: {"description": "Invalid spritesheet filename"},
+        404: {"description": "Spritesheet not found"},
+    },
+)
 async def get_sprite_sheet(provider: str, sheet_file: str):
     """Stream a spritesheet PNG from private S3 to the browser.
 

@@ -49,4 +49,5 @@ async def test_delivery_failure_restores_the_previous_verification_state(monkeyp
         await auth._issue_verification_email(user)
 
     assert error.value.status_code == 503
-    assert restored and restored[0][0] is user
+    assert restored
+    assert restored[0][0] is user

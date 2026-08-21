@@ -2,7 +2,9 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Depends
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
 from app.models.request_models import AssessmentRequest
 from app.models.response_models import AssessmentResponse
 from app.services.ai_assessor import AIAssessorService
@@ -15,10 +17,16 @@ def get_assessor_service() -> AIAssessorService:
     return AIAssessorService()
 
 
-@router.post("/assess", response_model=AssessmentResponse)
+@router.post(
+    "/assess",
+    responses={
+        400: {"description": "The assessment request contains no components."},
+        500: {"description": "The assessment service failed."},
+    },
+)
 async def assess_system_design(
     request: AssessmentRequest,
-    assessor: AIAssessorService = Depends(get_assessor_service),
+    assessor: Annotated[AIAssessorService, Depends(get_assessor_service)],
 ) -> AssessmentResponse:
     """
     Assess a system design solution using AI-powered analysis.

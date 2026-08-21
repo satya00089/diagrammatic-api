@@ -75,7 +75,7 @@ async def _issue_verification_email(user: Any) -> None:
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
 ) -> Dict[str, Any]:
     """Dependency to get current authenticated user from JWT token."""
     token = credentials.credentials
@@ -166,11 +166,10 @@ async def resend_verification(request: ResendVerificationRequest):
         message="If an unverified account exists, an activation email has been sent.", email=request.email
     )
     user = dynamodb_service.get_user_by_email(request.email)
-    if not user or _is_email_verified(user):
-        return generic
-    if not _verification_resend_available(user):
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Please wait a minute before requesting another activation email.")
-    await _issue_verification_email(user)
+    if user and not _is_email_verified(user):
+        if not _verification_resend_available(user):
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Please wait a minute before requesting another activation email.")
+        await _issue_verification_email(user)
     return generic
 
 
@@ -290,8 +289,10 @@ async def google_auth(request: GoogleAuthRequest):
     )
 
 
-@router.get("/auth/me", response_model=UserResponse)
-async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
+@router.get("/auth/me")
+async def get_me(
+    current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
+) -> UserResponse:
     """Get current user info (requires authentication)."""
     user = dynamodb_service.get_user_by_id(current_user["user_id"])
     if not user:
@@ -310,7 +311,7 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
     )
 
 
-@router.get("/auth/me/preferences", response_model=UserPreferences)
+@router.get("/auth/me/preferences")
 async def get_my_preferences(
     current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
 ) -> UserPreferences:
@@ -323,7 +324,7 @@ async def get_my_preferences(
     return UserPreferences.model_validate(prefs)
 
 
-@router.patch("/auth/me/preferences", response_model=UserPreferences)
+@router.patch("/auth/me/preferences")
 async def update_my_preferences(
     prefs: UserPreferences,
     current_user: Annotated[Dict[str, Any], Depends(get_current_user)],

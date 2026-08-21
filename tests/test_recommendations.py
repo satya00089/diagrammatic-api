@@ -10,6 +10,7 @@ Tests cover:
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.main import app
 from app.models.recommendation_models import (
@@ -47,7 +48,7 @@ class TestRecommendationModels:
 
     def test_canvas_context_negative_validation(self):
         """Test that negative counts raise validation error."""
-        with pytest.raises(Exception):  # Pydantic ValidationError
+        with pytest.raises(ValidationError):
             CanvasContextInfo(
                 node_count=-1, edge_count=0, component_types=[], is_empty=True
             )
@@ -71,13 +72,11 @@ class TestRecommendationModels:
 
     def test_max_suggestions_validation(self):
         """Test max_suggestions bounds."""
-        with pytest.raises(Exception):  # Should fail for values > 10
-            RecommendationRequest(
-                canvas_context=CanvasContextInfo(
-                    node_count=0, edge_count=0, component_types=[], is_empty=True
-                ),
-                max_suggestions=15,  # Too high
-            )
+        context = CanvasContextInfo(
+            node_count=0, edge_count=0, component_types=[], is_empty=True
+        )
+        with pytest.raises(ValidationError):
+            RecommendationRequest(canvas_context=context, max_suggestions=15)
 
 
 class TestConfidenceBasedFilter:

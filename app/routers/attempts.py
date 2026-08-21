@@ -14,9 +14,7 @@ from app.routers.auth import get_current_user
 router = APIRouter()
 
 
-@router.post(
-    "/attempts", response_model=AttemptResponse, status_code=status.HTTP_201_CREATED
-)
+@router.post("/attempts", status_code=status.HTTP_201_CREATED)
 async def create_or_update_attempt(
     request: AttemptCreate,
     current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
@@ -41,7 +39,7 @@ async def create_or_update_attempt(
     return attempt
 
 
-@router.get("/attempts", response_model=List[AttemptResponse])
+@router.get("/attempts")
 async def get_attempts(
     current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
 ) -> List[AttemptResponse]:
@@ -51,7 +49,7 @@ async def get_attempts(
     return attempts
 
 
-@router.get("/attempts/problem/{problem_id}", response_model=AttemptResponse)
+@router.get("/attempts/problem/{problem_id}")
 async def get_attempt_by_problem(
     problem_id: str,
     current_user: Annotated[Dict[str, Any], Depends(get_current_user)],
