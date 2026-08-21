@@ -68,7 +68,12 @@ class AIAssessorService:
             raise ValueError("The AI returned an empty response")
         text = content.strip()
         if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+            text = text[3:]
+            if text[:4].lower() == "json":
+                text = text[4:]
+            text = text.strip()
+            if text.endswith("```"):
+                text = text[:-3].rstrip()
         parsed: object = json.loads(text)
         if not isinstance(parsed, dict):
             raise ValueError("The AI response must be a JSON object")
@@ -234,7 +239,6 @@ class AIAssessorService:
             # Fallback to rule-based assessment
             return self._fallback_assessment(
                 request,
-                str(e),
                 processing_time_ms=int((time.time() - start_time) * 1000),
             )
 
@@ -264,27 +268,24 @@ class AIAssessorService:
         if not (comp_ok or conn_ok):
             return assessment  # nothing to suppress
 
+        def _matches_keywords(message: str, keywords: tuple[str, ...]) -> bool:
+            lower = message.lower()
+            return any(keyword in lower for keyword in keywords)
+
         def _keep_feedback(fb: ValidationFeedback) -> bool:
-            lower = fb.message.lower()
-            if comp_ok:
-                if fb.category in ("component_description",):
-                    return False
-                if any(kw in lower for kw in self._DESC_KEYWORDS):
-                    return False
-            if conn_ok:
-                if fb.category in ("connection_reasoning",):
-                    return False
-                if any(kw in lower for kw in self._CONN_KEYWORDS):
-                    return False
-            return True
+            component_feedback = fb.category == "component_description" or (
+                _matches_keywords(fb.message, self._DESC_KEYWORDS)
+            )
+            connection_feedback = fb.category == "connection_reasoning" or (
+                _matches_keywords(fb.message, self._CONN_KEYWORDS)
+            )
+            return not ((comp_ok and component_feedback) or (conn_ok and connection_feedback))
 
         def _keep_text(msg: str) -> bool:
-            lower = msg.lower()
-            if comp_ok and any(kw in lower for kw in self._DESC_KEYWORDS):
-                return False
-            if conn_ok and any(kw in lower for kw in self._CONN_KEYWORDS):
-                return False
-            return True
+            return not (
+                (comp_ok and _matches_keywords(msg, self._DESC_KEYWORDS))
+                or (conn_ok and _matches_keywords(msg, self._CONN_KEYWORDS))
+            )
 
         assessment.feedback = [fb for fb in assessment.feedback if _keep_feedback(fb)]
         assessment.improvements = [i for i in assessment.improvements if _keep_text(i)]
@@ -392,7 +393,6 @@ class AIAssessorService:
     def _fallback_assessment(
         self,
         request: AssessmentRequest,
-        error: str,
         processing_time_ms: int | None = None,
     ) -> AssessmentResponse:
         # Simple rule-based fallback when AI fails

@@ -1,5 +1,6 @@
 """Diagrams router for CRUD operations on diagrams."""
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -205,6 +206,73 @@ async def delete_diagram(
 
 
 # Sharing endpoints
+def _validate_share_request(
+    diagram_id: str, user_id: str, request: ShareRequest
+) -> tuple[Any, Optional[Collaborator]]:
+    has_access, error_msg = validate_diagram_access(user_id, diagram_id, "share")
+    if not has_access:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
+
+    is_valid, limit_msg = validate_collaborator_limit(diagram_id, user_id)
+    if not is_valid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=limit_msg)
+
+    if not dynamodb_service.get_diagram(user_id, diagram_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND)
+
+    share_user = dynamodb_service.get_user_by_email(request.email)
+    if not share_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if share_user.id == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot share with yourself"
+        )
+
+    collaborators = dynamodb_service.get_diagram_collaborators(diagram_id, user_id)
+    existing = next((item for item in collaborators if item.userId == share_user.id), None)
+    return share_user, existing
+
+
+def _create_collaborator(share_user: Any, request: ShareRequest) -> Collaborator:
+    return Collaborator(
+        userId=share_user.id,
+        email=share_user.email,
+        name=share_user.name,
+        picture=share_user.picture,
+        permission=request.permission,
+        addedAt=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _update_or_create_share(
+    diagram_id: str,
+    owner_id: str,
+    share_user: Any,
+    existing: Optional[Collaborator],
+    request: ShareRequest,
+) -> tuple[str, Optional[Collaborator]]:
+    if existing:
+        if existing.permission == request.permission:
+            return "Diagram already shared with this user", None
+        success = dynamodb_service.update_collaborator_permission(
+            diagram_id, owner_id, share_user.id, request.permission
+        )
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update collaborator permission",
+            )
+        return "Collaborator permission updated", None
+
+    collaborator = _create_collaborator(share_user, request)
+    if not dynamodb_service.share_diagram(diagram_id, owner_id, collaborator):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to share diagram",
+        )
+    return "Diagram shared successfully", collaborator
+
+
 @router.post("/diagrams/{diagram_id}/share", response_model=ShareResponse)
 async def share_diagram(
     diagram_id: str,
@@ -212,90 +280,16 @@ async def share_diagram(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Share a diagram with another user."""
-    # Check if user has permission to share (must be owner)
-    has_access, error_msg = validate_diagram_access(
-        current_user["user_id"], diagram_id, "share"
+    owner_id = current_user["user_id"]
+    share_user, existing = _validate_share_request(diagram_id, owner_id, request)
+    message, collaborator = _update_or_create_share(
+        diagram_id, owner_id, share_user, existing, request
     )
-    if not has_access:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
-
-    # Check collaborator limit
-    is_valid, limit_msg = validate_collaborator_limit(
-        diagram_id, current_user["user_id"]
-    )
-    if not is_valid:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=limit_msg)
-
-    # Get the diagram
-    existing = dynamodb_service.get_diagram(current_user["user_id"], diagram_id)
-    if not existing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=DIAGRAM_NOT_FOUND
-        )
-
-    # Get the user to share with
-    share_user = dynamodb_service.get_user_by_email(request.email)
-    if not share_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
-
-    # Don't allow sharing with yourself
-    if share_user.id == current_user["user_id"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot share with yourself"
-        )
-
-    # Check if already shared
-    collaborators = dynamodb_service.get_diagram_collaborators(
-        diagram_id, current_user["user_id"]
-    )
-    existing_collaborator = next(
-        (c for c in collaborators if c.userId == share_user.id), None
-    )
-    collaborator: Optional[Collaborator] = None
-
-    if existing_collaborator:
-        # Update permission if different
-        if existing_collaborator.permission != request.permission:
-            success = dynamodb_service.update_collaborator_permission(
-                diagram_id, current_user["user_id"], share_user.id, request.permission
-            )
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to update collaborator permission",
-                )
-            message = "Collaborator permission updated"
-        else:
-            message = "Diagram already shared with this user"
-    else:
-        # Add new collaborator
-        from datetime import datetime, timezone
-
-        collaborator = Collaborator(
-            userId=share_user.id,
-            email=share_user.email,
-            name=share_user.name,
-            picture=share_user.picture,
-            permission=request.permission,
-            addedAt=datetime.now(timezone.utc).isoformat(),
-        )
-
-        success = dynamodb_service.share_diagram(
-            diagram_id, current_user["user_id"], collaborator
-        )
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to share diagram",
-            )
-        message = "Diagram shared successfully"
 
     return ShareResponse(
         success=True,
         message=message,
-        collaborator=collaborator if not existing_collaborator else None,
+        collaborator=collaborator,
     )
 
 

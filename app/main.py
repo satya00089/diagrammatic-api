@@ -31,6 +31,7 @@ from app.services.dynamodb_service import dynamodb_service
 
 # Load settings
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _configure_app_logging(debug: bool) -> None:
@@ -40,7 +41,7 @@ def _configure_app_logging(debug: bool) -> None:
 
     # Uvicorn normally configures its own loggers, but it does not guarantee
     # that application loggers have a handler. Attach one so app.* messages
-    # are visible beside the existing startup print statements.
+    # are visible in local development and captured by deployment logs.
     if not app_logger.handlers:
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(
@@ -67,18 +68,18 @@ async def lifespan(_app: FastAPI):
     Application lifespan events.
     """
     # Startup
-    print("🚀 Diagrammatic API starting up...")
+    logger.info("Diagrammatic API starting up")
     try:
         # Test DynamoDB connection
         dynamodb_service.get_all_problems()
-        print("✅ DynamoDB connected successfully (lifespan)")
-    except Exception as e:
-        print(f"❌ Failed to connect to DynamoDB at startup: {e}")
+        logger.info("DynamoDB connected successfully during startup")
+    except Exception:
+        logger.exception("Failed to connect to DynamoDB at startup")
 
     yield
 
     # Shutdown (might not run on some serverless platforms)
-    print("👋 Diagrammatic API shutting down...")
+    logger.info("Diagrammatic API shutting down")
 
 
 app = FastAPI(
@@ -97,6 +98,11 @@ app.add_middleware(
     trusted_proxy_ips=settings.trusted_proxy_ips,
 )
 
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+
+# CORS must be the outermost middleware so error responses also receive the
+# appropriate CORS headers. Starlette wraps the most recently added middleware
+# around the previously configured chain.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
@@ -104,8 +110,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
 
 # Include routers
 app.include_router(assessment.router, prefix=API_V1_PREFIX, tags=["assessment"])
@@ -145,5 +149,6 @@ async def health_check():
         dynamodb_service.get_all_problems()
         healthy = True
     except Exception:
+        logger.exception("DynamoDB health check failed")
         healthy = False
     return {"status": "healthy" if healthy else "degraded", "database": "dynamodb"}

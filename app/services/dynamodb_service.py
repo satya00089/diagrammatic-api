@@ -17,6 +17,13 @@ from app.models.attempt_models import AttemptResponse, PublicSolutionResponse, L
 
 settings = get_settings()
 
+DDB_ZERO_VALUE = ":zero"
+DDB_UPDATED_VALUE = ":updated"
+DDB_COLLABORATORS_VALUE = ":collaborators"
+DDB_COLLABORATORS_UPDATE = (
+    "SET collaborators = :collaborators, updatedAt = :updated"
+)
+
 
 def convert_floats_to_decimal(obj: Any) -> Any:
     """
@@ -66,6 +73,58 @@ class DynamoDBService:
         self.walkthroughs_table: Table = dynamodb.Table(settings.dynamodb_walkthroughs_table)
 
     # User operations
+    def _resolve_existing_user(
+        self, user: User, google_id: Optional[str], picture: Optional[str]
+    ) -> User:
+        if google_id and not user.googleId:
+            updated_user = self.update_user_google_id(user.id, google_id, picture)
+            if updated_user:
+                return updated_user
+        return user
+
+    @staticmethod
+    def _build_user_item(
+        email: str,
+        password_hash: Optional[str],
+        name: Optional[str],
+        picture: Optional[str],
+        google_id: Optional[str],
+        email_verified: bool,
+    ) -> Dict[str, Any]:
+        user_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        item: Dict[str, Any] = {
+            "id": user_id,
+            "email": email,
+            "name": name,
+            "createdAt": now,
+            "updatedAt": now,
+            "emailVerified": email_verified,
+        }
+        optional_values = {
+            "passwordHash": password_hash,
+            "picture": picture,
+            "googleId": google_id,
+        }
+        item.update(
+            {key: value for key, value in optional_values.items() if value}
+        )
+        return item
+
+    def _save_new_user(self, item: Dict[str, Any], email: str) -> User:
+        try:
+            self.users_table.put_item(
+                Item=item, ConditionExpression="attribute_not_exists(id)"
+            )
+        except ClientError as error:
+            error_code = error.response.get("Error", {}).get("Code")  # type: ignore[union-attr]
+            if error_code == "ConditionalCheckFailedException":
+                existing_user = self.get_user_by_email(email)
+                if existing_user:
+                    return existing_user
+            raise
+        return User(**item)
+
     def create_user(
         self,
         email: str,
@@ -76,53 +135,13 @@ class DynamoDBService:
         email_verified: bool = False,
     ) -> User:
         """Create a new user in DynamoDB."""
-        # First check if user already exists to prevent duplicates
         existing_user = self.get_user_by_email(email)
         if existing_user:
-            # If creating with Google ID and existing user doesn't have it, update
-            if google_id and not existing_user.googleId:
-                updated_user = self.update_user_google_id(
-                    existing_user.id, google_id, picture
-                )
-                if updated_user:
-                    return updated_user
-            # Otherwise return existing user
-            return existing_user
-
-        user_id = str(uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-
-        item: Dict[str, Any] = {
-            "id": user_id,
-            "email": email,
-            "name": name,
-            "createdAt": now,
-            "updatedAt": now,
-            "emailVerified": email_verified,
-        }
-
-        if password_hash:
-            item["passwordHash"] = password_hash
-        if picture:
-            item["picture"] = picture
-        if google_id:
-            item["googleId"] = google_id
-
-        try:
-            # Use ConditionExpression to prevent creating if ID already exists
-            self.users_table.put_item(
-                Item=item, ConditionExpression="attribute_not_exists(id)"
-            )
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code")  # type: ignore[union-attr]
-            if error_code == "ConditionalCheckFailedException":
-                # User was created by another request, fetch and return it
-                existing_user = self.get_user_by_email(email)
-                if existing_user:
-                    return existing_user
-            raise
-
-        return User(**item)
+            return self._resolve_existing_user(existing_user, google_id, picture)
+        item = self._build_user_item(
+            email, password_hash, name, picture, google_id, email_verified
+        )
+        return self._save_new_user(item, email)
 
     def save_email_verification_token(
         self, user_id: str, token_hash: str, expires_at: str, sent_at: str
@@ -140,9 +159,9 @@ class DynamoDBService:
                     ":token": token_hash,
                     ":expires": expires_at,
                     ":sent": sent_at,
-                    ":zero": 0,
+                    DDB_ZERO_VALUE: 0,
                     ":one": 1,
-                    ":updated": sent_at,
+                    DDB_UPDATED_VALUE: sent_at,
                 },
                 ReturnValues="ALL_NEW",
             )
@@ -164,7 +183,7 @@ class DynamoDBService:
                     "SET emailVerified = :verified, updatedAt = :updated "
                     "REMOVE verificationTokenHash, verificationExpiresAt, verificationSentAt"
                 ),
-                "ExpressionAttributeValues": {":verified": True, ":updated": now},
+                "ExpressionAttributeValues": {":verified": True, DDB_UPDATED_VALUE: now},
                 "ReturnValues": "ALL_NEW",
             }
             # The conditional write makes the link single-use even if two
@@ -186,7 +205,7 @@ class DynamoDBService:
         try:
             values: Dict[str, Any] = {
                 ":expected": expected_token_hash,
-                ":updated": user.updatedAt,
+                DDB_UPDATED_VALUE: user.updatedAt,
                 ":version": user.verificationVersion,
             }
             if user.verificationTokenHash and user.verificationExpiresAt and user.verificationSentAt:
@@ -266,7 +285,7 @@ class DynamoDBService:
                 UpdateExpression="SET preferences = :prefs, updatedAt = :updated",
                 ExpressionAttributeValues={
                     ":prefs": prefs_safe,
-                    ":updated": now,
+                    DDB_UPDATED_VALUE: now,
                 },
                 ReturnValues="ALL_NEW",
             )
@@ -303,7 +322,7 @@ class DynamoDBService:
             update_expression = "SET googleId = :google_id, updatedAt = :updated"
             expression_values: Dict[str, Any] = {
                 ":google_id": google_id,
-                ":updated": now,
+                DDB_UPDATED_VALUE: now,
             }
 
             # Add picture to update if provided
@@ -424,7 +443,7 @@ class DynamoDBService:
             now = datetime.now(timezone.utc).isoformat()
 
             update_expression = "SET updatedAt = :updated"
-            expression_values: Dict[str, Any] = {":updated": now}
+            expression_values: Dict[str, Any] = {DDB_UPDATED_VALUE: now}
             expression_names: Dict[str, str] = {}
 
             if title is not None:
@@ -504,13 +523,13 @@ class DynamoDBService:
             # Update the diagram in DynamoDB
             self.diagrams_table.update_item(
                 Key={"userId": owner_id, "id": diagram_id},
-                UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
+                UpdateExpression=DDB_COLLABORATORS_UPDATE,
                 ExpressionAttributeValues={
-                    ":collaborators": [
+                    DDB_COLLABORATORS_VALUE: [
                         convert_floats_to_decimal(c.model_dump())
                         for c in diagram.collaborators
                     ],
-                    ":updated": datetime.now(timezone.utc).isoformat(),
+                    DDB_UPDATED_VALUE: datetime.now(timezone.utc).isoformat(),
                 },
             )
             return True
@@ -535,13 +554,13 @@ class DynamoDBService:
             # Update the diagram in DynamoDB
             self.diagrams_table.update_item(
                 Key={"userId": owner_id, "id": diagram_id},
-                UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
+                UpdateExpression=DDB_COLLABORATORS_UPDATE,
                 ExpressionAttributeValues={
-                    ":collaborators": [
+                    DDB_COLLABORATORS_VALUE: [
                         convert_floats_to_decimal(c.model_dump())
                         for c in diagram.collaborators
                     ],
-                    ":updated": datetime.now(timezone.utc).isoformat(),
+                    DDB_UPDATED_VALUE: datetime.now(timezone.utc).isoformat(),
                 },
             )
             return True
@@ -573,13 +592,13 @@ class DynamoDBService:
             # Update the diagram in DynamoDB
             self.diagrams_table.update_item(
                 Key={"userId": owner_id, "id": diagram_id},
-                UpdateExpression="SET collaborators = :collaborators, updatedAt = :updated",
+                UpdateExpression=DDB_COLLABORATORS_UPDATE,
                 ExpressionAttributeValues={
-                    ":collaborators": [
+                    DDB_COLLABORATORS_VALUE: [
                         convert_floats_to_decimal(c.model_dump())
                         for c in diagram.collaborators
                     ],
-                    ":updated": datetime.now(timezone.utc).isoformat(),
+                    DDB_UPDATED_VALUE: datetime.now(timezone.utc).isoformat(),
                 },
             )
             return True
@@ -908,7 +927,7 @@ class DynamoDBService:
                     ":ts": now,
                     ":name": author_name,
                     ":pic": author_picture or "",
-                    ":zero": 0,
+                    DDB_ZERO_VALUE: 0,
                 },
             )
             return {"publishedAt": now}
@@ -1047,7 +1066,7 @@ class DynamoDBService:
                     ":ts": now,
                     ":name": author_name,
                     ":pic": author_picture or "",
-                    ":zero": 0,
+                    DDB_ZERO_VALUE: 0,
                 },
             )
             return {"publishedAt": now}

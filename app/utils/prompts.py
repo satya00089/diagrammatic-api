@@ -17,10 +17,7 @@ def _has_meaningful_description(text: str | None) -> bool:
     return len(stripped) >= 10
 
 
-def get_assessment_prompt(request: AssessmentRequest) -> str:
-    """Generate the assessment prompt for the given request."""
-
-    # --- Coverage analysis (done before building the prompt text) ---
+def _coverage_note(request: AssessmentRequest) -> str:
     total_components = len(request.components)
     components_with_desc = sum(
         1 for c in request.components
@@ -39,7 +36,6 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
     desc_threshold_met = comp_coverage >= 70
     conn_threshold_met = conn_coverage >= 70 or total_connections == 0
 
-    # Coverage note injected into the prompt so the AI reasons from the same numbers
     coverage_note = (
         f"Coverage analysis: {components_with_desc}/{total_components} components have descriptions "
         f"({comp_coverage:.0f}%), {connections_with_desc}/{total_connections} connections have descriptions "
@@ -47,16 +43,19 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
     )
     if desc_threshold_met:
         coverage_note += (
-            f" Component description coverage meets the 70% quality threshold — "
-            f"do NOT penalise missing descriptions heavily; treat this as acceptable coverage."
+            " Component description coverage meets the 70% quality threshold — "
+            "do NOT penalise missing descriptions heavily; treat this as acceptable coverage."
         )
     if conn_threshold_met and total_connections > 0:
         coverage_note += (
-            f" Connection description coverage meets the 70% threshold — "
-            f"connection clarity should not be heavily penalised."
+            " Connection description coverage meets the 70% threshold — "
+            "connection clarity should not be heavily penalised."
         )
 
-    # Enhanced component description with detailed properties analysis
+    return coverage_note
+
+
+def _components_text(request: AssessmentRequest) -> str:
     components_text_parts: List[str] = []
     for comp in request.components:
         comp_desc = f'- **{comp.type.value.upper()}**: "{comp.label}"'
@@ -79,9 +78,10 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
 
         components_text_parts.append(comp_desc)
 
-    components_text = "\n".join(components_text_parts)
+    return "\n".join(components_text_parts)
 
-    # Enhanced connection descriptions with reasoning
+
+def _connections_text(request: AssessmentRequest) -> str:
     conn_parts: List[str] = []
     if request.connections:
         for conn in request.connections:
@@ -95,14 +95,13 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
             else:
                 conn_desc += "\n  ⚠️ No description - connection purpose unclear"
             conn_parts.append(conn_desc)
-        connections_text = "\n".join(conn_parts)
-    else:
-        connections_text = "⚠️ No explicit connections defined - data flow unclear"
+        return "\n".join(conn_parts)
+    return "⚠️ No explicit connections defined - data flow unclear"
 
-    # Build problem context section
-    problem_context = ""
+
+def _problem_context(request: AssessmentRequest) -> str:
     if request.problem:
-        problem_context = f"""
+        return f"""
 **PROBLEM CONTEXT:**
 - Title: {request.problem.title}
 - Description: {request.problem.description}
@@ -110,6 +109,15 @@ def get_assessment_prompt(request: AssessmentRequest) -> str:
 - Category: {request.problem.category or 'Not specified'}
 - Estimated Time: {request.problem.estimatedTime or 'Not specified'}
 """
+    return ""
+
+
+def get_assessment_prompt(request: AssessmentRequest) -> str:
+    """Generate the assessment prompt for the given request."""
+    coverage_note = _coverage_note(request)
+    components_text = _components_text(request)
+    connections_text = _connections_text(request)
+    problem_context = _problem_context(request)
 
     return f"""
 You are assessing a system design solution. Please evaluate the architecture comprehensively.

@@ -3,9 +3,9 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Annotated, Any, Dict, List, cast
 
-from fastapi import APIRouter, HTTPException, status, Header
+from fastapi import APIRouter, Header, HTTPException, status
 
 from app.services.auth_service import auth_service
 from app.services.dynamodb_service import dynamodb_service
@@ -19,6 +19,7 @@ router = APIRouter()
 BASE_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = BASE_DIR / "diagrammatic-data" / "learning-paths"
 SAMPLE_FILE = DATA_DIR / "learning-paths.json"
+INVALID_AUTH_TOKEN_DETAIL = "Invalid authentication token"
 
 
 def _read_sample() -> Dict[str, Any] | None:
@@ -30,19 +31,30 @@ def _read_sample() -> Dict[str, Any] | None:
     return cast(Dict[str, Any], data) if isinstance(data, dict) else None
 
 
-@router.get("/learning-paths", summary="List available learning paths")
+@router.get(
+    "/learning-paths",
+    summary="List available learning paths",
+    responses={500: {"description": "Learning paths could not be loaded"}},
+)
 async def list_learning_paths() -> List[Dict[str, Any]]:
     try:
         data = _read_sample()
         if not data:
             return []
         return [data]
-    except Exception as e:
-        logger.error("Error reading learning paths: %s", e)
+    except Exception:
+        logger.exception("Error reading learning paths")
         raise HTTPException(status_code=500, detail="Failed to load learning paths")
 
 
-@router.get("/learning-paths/{slug}", summary="Get learning path by slug")
+@router.get(
+    "/learning-paths/{slug}",
+    summary="Get learning path by slug",
+    responses={
+        404: {"description": "Learning path not found"},
+        500: {"description": "Learning path could not be loaded"},
+    },
+)
 async def get_learning_path(slug: str) -> Dict[str, Any]:
     try:
         data = _read_sample()
@@ -53,13 +65,16 @@ async def get_learning_path(slug: str) -> Dict[str, Any]:
         return data
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error fetching learning path %s: %s", slug, e)
+    except Exception:
+        logger.exception("Error fetching learning path")
         raise HTTPException(status_code=500, detail="Failed to fetch learning path")
 
 
 @router.get("/learning-paths/{path_id}/progress", summary="Get user progress for a path")
-async def get_progress(path_id: str, authorization: str | None = Header(None)):
+async def get_progress(
+    path_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+):
     """Return the authenticated user's progress for the given learning path.
 
     Requires a Bearer token in the `Authorization` header. Returns a JSON object
@@ -73,12 +88,18 @@ async def get_progress(path_id: str, authorization: str | None = Header(None)):
     try:
         payload = auth_service.decode_token(token)
         user_id = payload.get("user_id")
-    except Exception as e:
-        logger.debug("Invalid token when fetching progress: %s", e)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+    except Exception:
+        logger.exception("Invalid token when fetching progress")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_AUTH_TOKEN_DETAIL,
+        )
 
     if not isinstance(user_id, str) or not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_AUTH_TOKEN_DETAIL,
+        )
 
     prefs: Dict[str, Any] = dynamodb_service.get_user_preferences(user_id) or {}
     learning_progress = cast(
@@ -92,7 +113,7 @@ async def get_progress(path_id: str, authorization: str | None = Header(None)):
 async def post_progress(
     path_id: str,
     payload: Dict[str, Any],
-    authorization: str | None = Header(None),
+    authorization: Annotated[str | None, Header()] = None,
 ) -> Dict[str, Any]:
     """Persist the authenticated user's progress for the given learning path.
 
@@ -107,12 +128,18 @@ async def post_progress(
     try:
         payload_token = auth_service.decode_token(token)
         user_id = payload_token.get("user_id")
-    except Exception as e:
-        logger.debug("Invalid token when saving progress: %s", e)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+    except Exception:
+        logger.exception("Invalid token when saving progress")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_AUTH_TOKEN_DETAIL,
+        )
 
     if not isinstance(user_id, str) or not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_AUTH_TOKEN_DETAIL,
+        )
 
     raw_completed_value = payload.get("completed")
     if not isinstance(raw_completed_value, list):

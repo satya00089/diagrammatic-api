@@ -3,7 +3,7 @@ Transcriptions Router
 Proxies audio uploads and job polling to the standalone whisper-service.
 """
 
-from typing import Any, Dict
+from typing import Annotated, Any, Dict
 
 from fastapi import APIRouter, File, UploadFile
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
 
 @router.post("", status_code=202)
 async def submit_transcription(
-    audio: UploadFile = File(...),
+    audio: Annotated[UploadFile, File(...)],
 ) -> Dict[str, Any]:
     """Submit a voice recording for transcription. Returns a job id to poll."""
     content = await audio.read()

@@ -110,34 +110,27 @@ class UserPreferences(BaseModel):
         """
         if v is None:
             return None
-        # Already a list -> ensure string items
         if isinstance(v, list):
-            values = cast(List[Any], v)
-            return [str(x) for x in values if x is not None]
-
-        # Empty string -> treat as None
+            return [str(item) for item in cast(List[Any], v) if item is not None]
         if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return None
-            if "," in s:
-                return [p.strip() for p in s.split(",") if p.strip()]
-            return [s]
-
-        # If dict-like (e.g., option objects), try common keys
+            return cls._coerce_interest_string(v)
         if isinstance(v, dict):
-            values = cast(Dict[str, Any], v)
-            for key in ("value", "label", "id", "name"):
-                val = values.get(key)
-                if isinstance(val, str) and val.strip():
-                    return [val.strip()]
-            try:
-                return [str(values)]
-            except Exception:
-                return None
+            return cls._coerce_interest_mapping(cast(Dict[str, Any], v))
+        return [str(v)]
 
-        # Fallback: stringify into single-item list
-        try:
-            return [str(v)]
-        except Exception:
+    @staticmethod
+    def _coerce_interest_string(value: str) -> Optional[List[str]]:
+        stripped = value.strip()
+        if not stripped:
             return None
+        if "," in stripped:
+            return [part.strip() for part in stripped.split(",") if part.strip()]
+        return [stripped]
+
+    @staticmethod
+    def _coerce_interest_mapping(values: Dict[str, Any]) -> List[str]:
+        for key in ("value", "label", "id", "name"):
+            value = values.get(key)
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+        return [str(values)]

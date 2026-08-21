@@ -13,8 +13,11 @@ router = APIRouter()
 
 @router.get(
     "/problem/{problem_id}/walkthrough",
-    response_model=GuidedWalkthrough,
     summary="Get guided walkthrough for a problem",
+    responses={
+        404: {"description": "No guided walkthrough exists for the problem."},
+        500: {"description": "The guided walkthrough service failed."},
+    },
 )
 async def get_walkthrough(problem_id: str) -> GuidedWalkthrough:
     """
@@ -40,9 +43,9 @@ async def get_walkthrough(problem_id: str) -> GuidedWalkthrough:
         return GuidedWalkthrough(**data)
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error fetching walkthrough for problem '%s': %s", problem_id, e)
+    except Exception as exc:
+        logger.exception("Error fetching guided walkthrough")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch guided walkthrough",
-        ) from e
+        ) from exc
