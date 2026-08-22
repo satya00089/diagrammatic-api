@@ -70,6 +70,10 @@ class DiagramResponse(BaseModel):
     isPublic: bool = Field(
         default=False, description="Whether the diagram is publicly accessible"
     )
+    publishedAt: Optional[str] = Field(
+        default=None, description="When the diagram was last published"
+    )
+    viewCount: int = Field(default=0, description="Number of public views")
     collaborators: List[Collaborator] = Field(
         default_factory=lambda: cast(List[Collaborator], []),
         description="List of collaborators with access",
@@ -104,6 +108,8 @@ class Diagram(BaseModel):
     createdAt: str
     updatedAt: str
     isPublic: bool = Field(default=False)
+    publishedAt: Optional[str] = None
+    viewCount: int = 0
     collaborators: List[Collaborator] = Field(
         default_factory=lambda: cast(List[Collaborator], [])
     )

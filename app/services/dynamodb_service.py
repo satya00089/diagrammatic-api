@@ -808,6 +808,18 @@ class DynamoDBService:
             else:
                 item["createdAt"] = existing_attempt.createdAt
 
+            # Saving work must not silently revoke or reset an existing public link.
+            if existing_attempt:
+                item.update(
+                    {
+                        "isPublic": existing_attempt.isPublic,
+                        "publishedAt": existing_attempt.publishedAt,
+                        "authorName": existing_attempt.authorName,
+                        "authorPicture": existing_attempt.authorPicture,
+                        "viewCount": existing_attempt.viewCount,
+                    }
+                )
+
             # Ensure the entire item is DynamoDB-safe (float → Decimal).
             # This catches preserved_assessment which may have floats from a
             # prior convert_decimal_to_float round-trip on the existing attempt.
@@ -828,9 +840,11 @@ class DynamoDBService:
                 createdAt=item["createdAt"],
                 updatedAt=now,
                 lastAttemptedAt=now,
-                publishedAt=None,
-                authorName=None,
-                authorPicture=None,
+                isPublic=existing_attempt.isPublic if existing_attempt else False,
+                publishedAt=existing_attempt.publishedAt if existing_attempt else None,
+                authorName=existing_attempt.authorName if existing_attempt else None,
+                authorPicture=existing_attempt.authorPicture if existing_attempt else None,
+                viewCount=existing_attempt.viewCount if existing_attempt else 0,
             )
         except ClientError as e:
             print(f"Error creating/updating attempt: {e}")
