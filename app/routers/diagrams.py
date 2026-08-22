@@ -64,6 +64,8 @@ def enrich_diagram_response(diagram: Diagram, current_user_id: str) -> DiagramRe
         createdAt=diagram.createdAt,
         updatedAt=diagram.updatedAt,
         isPublic=diagram.isPublic,
+        publishedAt=diagram.publishedAt,
+        viewCount=diagram.viewCount,
         collaborators=diagram.collaborators,
         isOwner=is_owner,
         permission=permission,
