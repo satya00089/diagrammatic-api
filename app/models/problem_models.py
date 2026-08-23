@@ -1,50 +1,81 @@
-"""Models for problem data from DynamoDB."""
+"""Models for public problem data from DynamoDB."""
 
-from typing import List, Optional
 from datetime import datetime
+import re
+from typing import cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class ProblemSummary(BaseModel):
+def problem_slug(title: str) -> str:
+    """Return a clean, deterministic fallback slug for legacy problem records."""
+    normalized = (
+        title.lower()
+        .replace("&", " and ")
+        .replace("\u2019", "")
+        .replace("'", "")
+    )
+    return re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", normalized))
+
+
+class SluggedProblemModel(BaseModel):
+    """Shared Pydantic v2 configuration and legacy-slug normalization."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_slug(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+
+        problem_data = cast(dict[str, object], data)
+        if problem_data.get("slug"):
+            return problem_data
+
+        title = problem_data.get("title")
+        if not isinstance(title, str):
+            return problem_data
+
+        normalized_data = dict(problem_data)
+        normalized_data["slug"] = problem_slug(title)
+        return normalized_data
+
+
+class ProblemSummary(SluggedProblemModel):
     """Model for problem summary (used in /all-problems endpoint)."""
 
     id: str
+    slug: str = ""
     title: str
     description: str
     difficulty: str
     category: str
-    domain: Optional[str] = None
+    domain: str | None = None
     estimatedTime: str = Field(alias="estimated_time")
-    tags: List[str] = []
-    companies: List[str] = []
+    requirements: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    hints: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    companies: list[str] = Field(default_factory=list)
     has_guided_walkthrough: bool = False
 
-    class Config:
-        """Pydantic configuration for ProblemSummary."""
 
-        populate_by_name = True
-
-
-class ProblemDetail(BaseModel):
+class ProblemDetail(SluggedProblemModel):
     """Model for detailed problem data (used in /problem/{id} endpoint)."""
 
     id: str
+    slug: str = ""
     title: str
     description: str
     difficulty: str
     category: str
-    domain: Optional[str] = None
+    domain: str | None = None
     estimatedTime: str = Field(alias="estimated_time")
-    requirements: List[str] = []
-    constraints: List[str] = []
-    hints: List[str] = []
-    tags: List[str] = []
-    companies: List[str] = []
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        """Pydantic configuration for ProblemDetail."""
-
-        populate_by_name = True
+    requirements: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    hints: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    companies: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
