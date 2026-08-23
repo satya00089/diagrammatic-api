@@ -15,13 +15,27 @@ def problem_slug(title: str) -> str:
         .replace("\u2019", "")
         .replace("'", "")
     )
-    return re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", normalized))
+    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
 
 
-class SluggedProblemModel(BaseModel):
-    """Shared Pydantic v2 configuration and legacy-slug normalization."""
+class ProblemModel(BaseModel):
+    """Fields and normalization shared by public problem responses."""
 
     model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    slug: str = ""
+    title: str
+    description: str
+    difficulty: str
+    category: str
+    domain: str | None = None
+    estimatedTime: str = Field(alias="estimated_time")
+    requirements: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    hints: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    companies: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -42,40 +56,14 @@ class SluggedProblemModel(BaseModel):
         return normalized_data
 
 
-class ProblemSummary(SluggedProblemModel):
+class ProblemSummary(ProblemModel):
     """Model for problem summary (used in /all-problems endpoint)."""
 
-    id: str
-    slug: str = ""
-    title: str
-    description: str
-    difficulty: str
-    category: str
-    domain: str | None = None
-    estimatedTime: str = Field(alias="estimated_time")
-    requirements: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    hints: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
-    companies: list[str] = Field(default_factory=list)
     has_guided_walkthrough: bool = False
 
 
-class ProblemDetail(SluggedProblemModel):
+class ProblemDetail(ProblemModel):
     """Model for detailed problem data (used in /problem/{id} endpoint)."""
 
-    id: str
-    slug: str = ""
-    title: str
-    description: str
-    difficulty: str
-    category: str
-    domain: str | None = None
-    estimatedTime: str = Field(alias="estimated_time")
-    requirements: list[str] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    hints: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
-    companies: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
