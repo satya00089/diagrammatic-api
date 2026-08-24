@@ -61,6 +61,7 @@ def enrich_diagram_response(diagram: Diagram, current_user_id: str) -> DiagramRe
         description=diagram.description,
         nodes=diagram.nodes,
         edges=diagram.edges,
+        reasoningContext=diagram.reasoningContext,
         createdAt=diagram.createdAt,
         updatedAt=diagram.updatedAt,
         isPublic=diagram.isPublic,
@@ -88,6 +89,11 @@ async def create_diagram(
         description=request.description,
         nodes=request.nodes,
         edges=request.edges,
+        reasoning_context=(
+            request.reasoningContext.model_dump(exclude_none=True)
+            if request.reasoningContext
+            else None
+        ),
     )
 
     return enrich_diagram_response(diagram, user_id)
@@ -172,6 +178,11 @@ async def update_diagram(
         description=request.description,
         nodes=request.nodes,
         edges=request.edges,
+        reasoning_context=(
+            request.reasoningContext.model_dump(exclude_none=True)
+            if request.reasoningContext
+            else None
+        ),
     )
 
     if not updated_diagram:

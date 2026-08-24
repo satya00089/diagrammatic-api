@@ -3,7 +3,9 @@
 from typing import List, Optional, Dict, Any
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.models.reasoning_models import InterviewSession, ReasoningContext
 
 
 class ComponentType(str, Enum):
@@ -71,3 +73,20 @@ class AssessmentRequest(BaseModel):
     requirements: Optional[str] = None
     constraints: Optional[str] = None
     problem: Optional[ProblemContext] = None
+    reasoningContext: Optional[ReasoningContext] = None
+    interviewSession: Optional[InterviewSession] = None
+
+
+class InterviewQuestionsRequest(BaseModel):
+    """Request for architecture-specific questions before assessment."""
+
+    architecture: AssessmentRequest
+
+
+class InterviewRequest(BaseModel):
+    """Request for critique of an answer to an architecture interview question."""
+
+    architecture: AssessmentRequest
+    question: str = Field(..., min_length=1, max_length=4000)
+    answer: str = Field(..., min_length=1, max_length=8000)
+    previousCritique: Optional[str] = Field(None, max_length=8000)

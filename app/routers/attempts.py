@@ -34,6 +34,16 @@ async def create_or_update_attempt(
         last_assessment=cast(
             Optional[Dict[str, Any]], request.model_dump().get("lastAssessment")
         ),
+        reasoning_context=(
+            request.reasoningContext.model_dump(exclude_none=True)
+            if request.reasoningContext
+            else None
+        ),
+        interview_session=(
+            request.interviewSession.model_dump(exclude_none=True)
+            if request.interviewSession
+            else None
+        ),
     )
 
     return attempt

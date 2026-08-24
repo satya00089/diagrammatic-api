@@ -13,6 +13,7 @@ from app.routers import (
     auth,
     diagrams,
     assessment,
+    interview,
     problems,
     collaboration,
     attempts,
@@ -113,6 +114,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(assessment.router, prefix=API_V1_PREFIX, tags=["assessment"])
+app.include_router(interview.router, prefix=API_V1_PREFIX, tags=["interview"])
 app.include_router(problems.router, prefix=API_V1_PREFIX, tags=["problems"])
 app.include_router(auth.router, prefix=API_V1_PREFIX, tags=["auth"])
 app.include_router(diagrams.router, prefix=API_V1_PREFIX, tags=["diagrams"])
