@@ -12,7 +12,6 @@ router = APIRouter()
 
 @router.post(
     "/interview/questions",
-    response_model=InterviewQuestionsResponse,
     status_code=status.HTTP_200_OK,
 )
 async def generate_interview_questions(
@@ -30,7 +29,6 @@ async def generate_interview_questions(
 
 @router.post(
     "/interview/respond",
-    response_model=InterviewResponse,
     status_code=status.HTTP_200_OK,
 )
 async def respond_to_interview(

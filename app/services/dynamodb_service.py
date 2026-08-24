@@ -760,6 +760,145 @@ class DynamoDBService:
             return []
 
     # Problem attempt operations
+    @staticmethod
+    def _prepare_attempt_state(
+        existing_attempt: Optional[AttemptResponse],
+        last_assessment: Optional[Dict[str, Any]],
+        reasoning_context: Optional[Dict[str, Any]],
+        interview_session: Optional[Dict[str, Any]],
+    ) -> tuple[
+        int,
+        Optional[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+        Dict[str, Any],
+    ]:
+        existing_data = (
+            existing_attempt.model_dump() if existing_attempt is not None else {}
+        )
+        assessment_count = existing_attempt.assessmentCount if existing_attempt else 0
+        preserved_assessment = cast(
+            Optional[Dict[str, Any]], existing_data.get("lastAssessment")
+        )
+
+        if reasoning_context is not None:
+            preserved_reasoning_context = convert_floats_to_decimal(
+                reasoning_context
+            )
+        else:
+            preserved_reasoning_context = existing_data.get("reasoningContext")
+
+        if interview_session is not None:
+            preserved_interview_session = convert_floats_to_decimal(
+                interview_session
+            )
+        else:
+            preserved_interview_session = existing_data.get("interviewSession")
+
+        if last_assessment:
+            assessment_count += 1
+            preserved_assessment = convert_floats_to_decimal(last_assessment)
+
+        return (
+            assessment_count,
+            preserved_assessment,
+            preserved_reasoning_context,
+            preserved_interview_session,
+            existing_data,
+        )
+
+    @staticmethod
+    def _build_attempt_item(
+        user_id: str,
+        problem_id: str,
+        title: str,
+        difficulty: Optional[str],
+        category: Optional[str],
+        nodes: List[Any],
+        edges: List[Any],
+        elapsed_time: int,
+        preserved_assessment: Optional[Dict[str, Any]],
+        preserved_reasoning_context: Optional[Dict[str, Any]],
+        preserved_interview_session: Optional[Dict[str, Any]],
+        assessment_count: int,
+        now: str,
+        existing_attempt: Optional[AttemptResponse],
+    ) -> Dict[str, Any]:
+        item: Dict[str, Any] = {
+            "userId": user_id,
+            "problemId": problem_id,
+            "title": title,
+            "difficulty": difficulty or "Medium",
+            "category": category or "General",
+            "nodes": convert_floats_to_decimal(nodes),
+            "edges": convert_floats_to_decimal(edges),
+            "elapsedTime": elapsed_time,
+            "lastAssessment": preserved_assessment,
+            "reasoningContext": preserved_reasoning_context,
+            "interviewSession": preserved_interview_session,
+            "assessmentCount": assessment_count,
+            "updatedAt": now,
+            "lastAttemptedAt": now,
+        }
+
+        if existing_attempt is None:
+            item["createdAt"] = now
+        else:
+            item["createdAt"] = existing_attempt.createdAt
+            item.update(
+                {
+                    "isPublic": existing_attempt.isPublic,
+                    "publishedAt": existing_attempt.publishedAt,
+                    "authorName": existing_attempt.authorName,
+                    "authorPicture": existing_attempt.authorPicture,
+                    "viewCount": existing_attempt.viewCount,
+                }
+            )
+
+        return item
+
+    @staticmethod
+    def _build_attempt_response(
+        user_id: str,
+        problem_id: str,
+        title: str,
+        difficulty: Optional[str],
+        category: Optional[str],
+        nodes: List[Any],
+        edges: List[Any],
+        elapsed_time: int,
+        last_assessment: Optional[Dict[str, Any]],
+        reasoning_context: Optional[Dict[str, Any]],
+        interview_session: Optional[Dict[str, Any]],
+        assessment_count: int,
+        item: Dict[str, Any],
+        now: str,
+        existing_attempt: Optional[AttemptResponse],
+    ) -> AttemptResponse:
+        return AttemptResponse(
+            id=f"{user_id}#{problem_id}",
+            userId=user_id,
+            problemId=problem_id,
+            title=title,
+            difficulty=difficulty or "Medium",
+            category=category or "General",
+            nodes=nodes,
+            edges=edges,
+            elapsedTime=elapsed_time,
+            lastAssessment=last_assessment,
+            reasoningContext=reasoning_context,
+            interviewSession=interview_session,
+            assessmentCount=assessment_count,
+            createdAt=item["createdAt"],
+            updatedAt=now,
+            lastAttemptedAt=now,
+            isPublic=existing_attempt.isPublic if existing_attempt else False,
+            publishedAt=existing_attempt.publishedAt if existing_attempt else None,
+            authorName=existing_attempt.authorName if existing_attempt else None,
+            authorPicture=existing_attempt.authorPicture if existing_attempt else None,
+            viewCount=existing_attempt.viewCount if existing_attempt else 0,
+        )
+
     def create_or_update_attempt(
         self,
         user_id: str,
@@ -776,125 +915,61 @@ class DynamoDBService:
     ) -> AttemptResponse:
         """Create or update a problem attempt (upsert operation)."""
         try:
-            # Get existing attempt to preserve assessment count
             existing_attempt = self.get_attempt_by_problem(user_id, problem_id)
-
             now = datetime.now(timezone.utc).isoformat()
-
-            # Convert floats to Decimal for DynamoDB
-            nodes_decimal = convert_floats_to_decimal(nodes)
-            edges_decimal = convert_floats_to_decimal(edges)
-            assessment_decimal = (
-                convert_floats_to_decimal(last_assessment) if last_assessment else None
+            (
+                assessment_count,
+                preserved_assessment,
+                preserved_reasoning_context,
+                preserved_interview_session,
+                existing_data,
+            ) = self._prepare_attempt_state(
+                existing_attempt,
+                last_assessment,
+                reasoning_context,
+                interview_session,
             )
-            reasoning_context_decimal = (
-                convert_floats_to_decimal(reasoning_context)
-                if reasoning_context is not None
-                else None
+            item = self._build_attempt_item(
+                user_id,
+                problem_id,
+                title,
+                difficulty,
+                category,
+                nodes,
+                edges,
+                elapsed_time,
+                preserved_assessment,
+                preserved_reasoning_context,
+                preserved_interview_session,
+                assessment_count,
+                now,
+                existing_attempt,
             )
-            interview_session_decimal = (
-                convert_floats_to_decimal(interview_session)
-                if interview_session is not None
-                else None
-            )
 
-            # Increment assessment count if new assessment provided
-            assessment_count = 0
-            preserved_assessment = None
-            preserved_reasoning_context = reasoning_context_decimal
-            preserved_interview_session = interview_session_decimal
-            if existing_attempt:
-                assessment_count = existing_attempt.assessmentCount
-                preserved_assessment = cast(
-                    Optional[Dict[str, Any]],
-                    existing_attempt.model_dump().get("lastAssessment"),
-                )
-                if reasoning_context is None:
-                    preserved_reasoning_context = existing_attempt.model_dump().get(
-                        "reasoningContext"
-                    )
-                if interview_session is None:
-                    preserved_interview_session = existing_attempt.model_dump().get(
-                        "interviewSession"
-                    )
-            if last_assessment:
-                assessment_count += 1
-                preserved_assessment = assessment_decimal
-
-            item: Dict[str, Any] = {
-                "userId": user_id,
-                "problemId": problem_id,
-                "title": title,
-                "difficulty": difficulty or "Medium",
-                "category": category or "General",
-                "nodes": nodes_decimal,
-                "edges": edges_decimal,
-                "elapsedTime": elapsed_time,
-                "lastAssessment": preserved_assessment,  # Preserve existing assessment if not updating
-                "reasoningContext": preserved_reasoning_context,
-                "interviewSession": preserved_interview_session,
-                "assessmentCount": assessment_count,
-                "updatedAt": now,
-                "lastAttemptedAt": now,
-            }
-
-            # Only set createdAt for new attempts
-            if not existing_attempt:
-                item["createdAt"] = now
-            else:
-                item["createdAt"] = existing_attempt.createdAt
-
-            # Saving work must not silently revoke or reset an existing public link.
-            if existing_attempt:
-                item.update(
-                    {
-                        "isPublic": existing_attempt.isPublic,
-                        "publishedAt": existing_attempt.publishedAt,
-                        "authorName": existing_attempt.authorName,
-                        "authorPicture": existing_attempt.authorPicture,
-                        "viewCount": existing_attempt.viewCount,
-                    }
-                )
-
-            # Ensure the entire item is DynamoDB-safe (float → Decimal).
-            # This catches preserved_assessment which may have floats from a
-            # prior convert_decimal_to_float round-trip on the existing attempt.
             self.attempts_table.put_item(Item=convert_floats_to_decimal(item))
+            response_reasoning_context = reasoning_context
+            if response_reasoning_context is None:
+                response_reasoning_context = existing_data.get("reasoningContext")
+            response_interview_session = interview_session
+            if response_interview_session is None:
+                response_interview_session = existing_data.get("interviewSession")
 
-            return AttemptResponse(
-                id=f"{user_id}#{problem_id}",  # Composite ID for frontend
-                userId=user_id,
-                problemId=problem_id,
-                title=title,
-                difficulty=difficulty or "Medium",
-                category=category or "General",
-                nodes=nodes,
-                edges=edges,
-                elapsedTime=elapsed_time,
-                lastAssessment=last_assessment,
-                reasoningContext=reasoning_context
-                if reasoning_context is not None
-                else (
-                    existing_attempt.model_dump().get("reasoningContext")
-                    if existing_attempt
-                    else None
-                ),
-                interviewSession=interview_session
-                if interview_session is not None
-                else (
-                    existing_attempt.model_dump().get("interviewSession")
-                    if existing_attempt
-                    else None
-                ),
-                assessmentCount=assessment_count,
-                createdAt=item["createdAt"],
-                updatedAt=now,
-                lastAttemptedAt=now,
-                isPublic=existing_attempt.isPublic if existing_attempt else False,
-                publishedAt=existing_attempt.publishedAt if existing_attempt else None,
-                authorName=existing_attempt.authorName if existing_attempt else None,
-                authorPicture=existing_attempt.authorPicture if existing_attempt else None,
-                viewCount=existing_attempt.viewCount if existing_attempt else 0,
+            return self._build_attempt_response(
+                user_id,
+                problem_id,
+                title,
+                difficulty,
+                category,
+                nodes,
+                edges,
+                elapsed_time,
+                last_assessment,
+                response_reasoning_context,
+                response_interview_session,
+                assessment_count,
+                item,
+                now,
+                existing_attempt,
             )
         except ClientError as e:
             print(f"Error creating/updating attempt: {e}")

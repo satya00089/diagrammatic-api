@@ -1,7 +1,7 @@
 """API router for problem-related endpoints."""
 
 import logging
-from typing import Annotated, Any, Dict, List, Optional, Union
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from app.models.problem_models import ProblemSummary, ProblemDetail
@@ -15,10 +15,13 @@ router = APIRouter()
 
 @router.get("/all-problems")
 async def get_all_problems(
-    category: Optional[str] = Query(None, description="Filter by category"),
-    difficulty: Optional[str] = Query(
-        None, description="Filter by difficulty (easy/medium/hard/very hard)"
-    ),
+    category: Annotated[
+        Optional[str], Query(description="Filter by category")
+    ] = None,
+    difficulty: Annotated[
+        Optional[str],
+        Query(description="Filter by difficulty (easy/medium/hard/very hard)"),
+    ] = None,
 ) -> List[ProblemSummary]:
     """
     Get all problems with summary information, sorted from easy to very hard.
@@ -116,7 +119,7 @@ async def get_attempted_problems(
 
 
 @router.get("/problems/health")
-async def problems_health_check() -> Dict[str, Union[str, int]]:
+async def problems_health_check() -> Dict[str, str | int]:
     """Health check for problems service and database connection."""
     try:
         # Try to query a single item to check if DynamoDB is accessible
