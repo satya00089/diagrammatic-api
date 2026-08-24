@@ -3,7 +3,11 @@
 import re
 from typing import List
 
-from app.models.request_models import AssessmentRequest
+from app.models.request_models import (
+    AssessmentRequest,
+    InterviewQuestionsRequest,
+    InterviewRequest,
+)
 
 # Properties that are purely frontend/layout state and should not be sent to the AI
 _INTERNAL_PROPS = frozenset({"x", "y", "width", "height", "selected", "dragging", "zIndex", "parentId", "expandParent"})
@@ -112,12 +116,55 @@ def _problem_context(request: AssessmentRequest) -> str:
     return ""
 
 
+def _reasoning_context(request: AssessmentRequest) -> str:
+    """Render system-generated review context without inventing missing values."""
+    context = request.reasoningContext
+    if not context:
+        return "**SYSTEM-GENERATED REVIEW CONTEXT:**\nNo additional context was derived from the problem or canvas."
+
+    labels = (
+        ("Requirements", context.requirements),
+        ("Scale assumptions", context.scaleAssumptions),
+        ("Expected traffic", context.expectedTraffic),
+        ("Read/write ratio", context.readWriteRatio),
+        ("Latency goals", context.latencyGoals),
+        ("Availability target", context.availabilityTarget),
+        ("Consistency requirements", context.consistencyRequirements),
+        ("Technology choices", context.technologyChoices),
+        ("Trade-offs", context.tradeoffs),
+        ("Unresolved risks", context.unresolvedRisks),
+    )
+    lines = [f"- {label}: {value}" for label, value in labels if value and value.strip()]
+    return "**SYSTEM-GENERATED REVIEW CONTEXT:**\n" + (
+        "\n".join(lines) if lines else "No additional context was derived from the problem or canvas."
+    )
+
+
+def _interview_session_context(request: AssessmentRequest) -> str:
+    """Render answers supplied before assessment, including skipped questions."""
+    session = request.interviewSession
+    if not session or not session.exchanges:
+        return "**PRE-ASSESSMENT INTERVIEW:**\nNo answers were supplied before assessment."
+
+    lines = []
+    for exchange in session.exchanges:
+        if exchange.skipped:
+            lines.append(f"- Question: {exchange.question}\n  Candidate: Skipped")
+        else:
+            lines.append(
+                f"- Question: {exchange.question}\n  Candidate answer: {exchange.answer or 'No answer provided'}"
+            )
+    return "**PRE-ASSESSMENT INTERVIEW:**\n" + "\n".join(lines)
+
+
 def get_assessment_prompt(request: AssessmentRequest) -> str:
     """Generate the assessment prompt for the given request."""
     coverage_note = _coverage_note(request)
     components_text = _components_text(request)
     connections_text = _connections_text(request)
     problem_context = _problem_context(request)
+    reasoning_context = _reasoning_context(request)
+    interview_context = _interview_session_context(request)
 
     return f"""
 You are assessing a system design solution. Please evaluate the architecture comprehensively.
@@ -142,6 +189,11 @@ You are assessing a system design solution. Please evaluate the architecture com
 
 **CONSTRAINTS:**
 {request.problem.constraints if request.problem and request.problem.constraints else request.constraints or 'No constraints specified'}
+
+{reasoning_context}
+{interview_context}
+
+The review context above is supplied by Diagrammatic from the problem brief and current canvas. Treat explicit problem and canvas facts as context, but do not treat missing targets as facts and do not invent traffic, latency, availability, or consistency values. Do not penalize a choice merely because it differs from a common default; evaluate whether it is coherent with the available context and explain what the candidate should clarify in Interview Mode.
 
 **ASSESSMENT CRITERIA:**
 Rate each aspect from 0-100, considering the problem context, requirements, and component descriptions:
@@ -310,6 +362,70 @@ Respond with a valid JSON object in this exact structure:
 - At least some consideration of failure handling, security, and observability
 
 Focus on practical, actionable feedback that helps users improve their system design skills and pass real system design interviews.
+    """
+
+
+def get_interview_prompt(request: InterviewRequest) -> str:
+    """Generate a focused prompt for critiquing one interview answer."""
+    architecture = request.architecture
+    return f"""
+You are conducting a system-design interview. The candidate has already drawn the architecture below and is answering one follow-up question.
+
+{_problem_context(architecture)}
+{_reasoning_context(architecture)}
+
+**ARCHITECTURE COMPONENTS:**
+{_components_text(architecture)}
+
+**ARCHITECTURE CONNECTIONS:**
+{_connections_text(architecture)}
+
+**INTERVIEW QUESTION:**
+{request.question}
+
+**CANDIDATE ANSWER:**
+{request.answer}
+
+**PREVIOUS CRITIQUE (if any):**
+{request.previousCritique or 'This is the first answer in the exchange.'}
+
+Evaluate the answer as an interviewer. Be specific to the architecture and the candidate's stated assumptions. Do not provide a complete ideal solution. Identify what the answer handled well, what it missed, and what direction the candidate should explore next.
+
+Respond with valid JSON in this exact structure:
+{{
+  "critique": "Two to four concise paragraphs explaining the quality of the answer and its architectural consequences.",
+  "strengths": ["Specific thing the candidate reasoned well about"],
+  "gaps": ["Specific missing assumption, failure mode, trade-off, or operational detail"],
+  "next_question": "One focused follow-up question, or null when the answer is sufficient"
+}}
+"""
+
+
+def get_interview_questions_prompt(request: InterviewQuestionsRequest) -> str:
+    """Generate focused questions to answer before an assessment."""
+    architecture = request.architecture
+    return f"""
+You are preparing a system-design interview for the architecture below.
+
+{_problem_context(architecture)}
+{_reasoning_context(architecture)}
+
+**ARCHITECTURE COMPONENTS:**
+{_components_text(architecture)}
+
+**ARCHITECTURE CONNECTIONS:**
+{_connections_text(architecture)}
+
+Create 3 to 5 concise, architecture-specific questions that test the
+candidate's assumptions, scaling plan, failure handling, data consistency,
+security, or operational trade-offs. Ask questions the candidate can answer
+from the diagram and problem brief. Do not ask for information already stated
+as a fact. Avoid generic questions that could apply to any architecture.
+
+Respond with valid JSON in exactly this structure:
+{{
+  "questions": ["One focused question", "Another focused question"]
+}}
 """
 
 

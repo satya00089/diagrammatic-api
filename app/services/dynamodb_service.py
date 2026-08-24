@@ -353,6 +353,7 @@ class DynamoDBService:
         description: Optional[str],
         nodes: List[Any],
         edges: List[Any],
+        reasoning_context: Optional[Dict[str, Any]] = None,
     ) -> Diagram:
         """Create a new diagram in DynamoDB."""
         diagram_id = str(uuid4())
@@ -369,6 +370,9 @@ class DynamoDBService:
             "description": description,
             "nodes": nodes_decimal,
             "edges": edges_decimal,
+            "reasoningContext": convert_floats_to_decimal(reasoning_context)
+            if reasoning_context is not None
+            else None,
             "createdAt": now,
             "updatedAt": now,
         }
@@ -383,6 +387,7 @@ class DynamoDBService:
             description=description,
             nodes=nodes,
             edges=edges,
+            reasoningContext=reasoning_context,
             createdAt=now,
             updatedAt=now,
         )
@@ -437,6 +442,7 @@ class DynamoDBService:
         description: Optional[str] = None,
         nodes: Optional[List[Any]] = None,
         edges: Optional[List[Any]] = None,
+        reasoning_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Diagram]:
         """Update a diagram."""
         try:
@@ -465,6 +471,12 @@ class DynamoDBService:
                 # Convert floats to Decimal for DynamoDB
                 expression_values[":edges"] = convert_floats_to_decimal(edges)
                 expression_names["#edges"] = "edges"
+
+            if reasoning_context is not None:
+                update_expression += ", reasoningContext = :reasoning_context"
+                expression_values[":reasoning_context"] = convert_floats_to_decimal(
+                    reasoning_context
+                )
 
             update_kwargs: Dict[str, Any] = {
                 "Key": {"userId": user_id, "id": diagram_id},
@@ -759,6 +771,8 @@ class DynamoDBService:
         edges: List[Any],
         elapsed_time: int = 0,
         last_assessment: Optional[Dict[str, Any]] = None,
+        reasoning_context: Optional[Dict[str, Any]] = None,
+        interview_session: Optional[Dict[str, Any]] = None,
     ) -> AttemptResponse:
         """Create or update a problem attempt (upsert operation)."""
         try:
@@ -773,16 +787,36 @@ class DynamoDBService:
             assessment_decimal = (
                 convert_floats_to_decimal(last_assessment) if last_assessment else None
             )
+            reasoning_context_decimal = (
+                convert_floats_to_decimal(reasoning_context)
+                if reasoning_context is not None
+                else None
+            )
+            interview_session_decimal = (
+                convert_floats_to_decimal(interview_session)
+                if interview_session is not None
+                else None
+            )
 
             # Increment assessment count if new assessment provided
             assessment_count = 0
             preserved_assessment = None
+            preserved_reasoning_context = reasoning_context_decimal
+            preserved_interview_session = interview_session_decimal
             if existing_attempt:
                 assessment_count = existing_attempt.assessmentCount
                 preserved_assessment = cast(
                     Optional[Dict[str, Any]],
                     existing_attempt.model_dump().get("lastAssessment"),
                 )
+                if reasoning_context is None:
+                    preserved_reasoning_context = existing_attempt.model_dump().get(
+                        "reasoningContext"
+                    )
+                if interview_session is None:
+                    preserved_interview_session = existing_attempt.model_dump().get(
+                        "interviewSession"
+                    )
             if last_assessment:
                 assessment_count += 1
                 preserved_assessment = assessment_decimal
@@ -797,6 +831,8 @@ class DynamoDBService:
                 "edges": edges_decimal,
                 "elapsedTime": elapsed_time,
                 "lastAssessment": preserved_assessment,  # Preserve existing assessment if not updating
+                "reasoningContext": preserved_reasoning_context,
+                "interviewSession": preserved_interview_session,
                 "assessmentCount": assessment_count,
                 "updatedAt": now,
                 "lastAttemptedAt": now,
@@ -836,6 +872,20 @@ class DynamoDBService:
                 edges=edges,
                 elapsedTime=elapsed_time,
                 lastAssessment=last_assessment,
+                reasoningContext=reasoning_context
+                if reasoning_context is not None
+                else (
+                    existing_attempt.model_dump().get("reasoningContext")
+                    if existing_attempt
+                    else None
+                ),
+                interviewSession=interview_session
+                if interview_session is not None
+                else (
+                    existing_attempt.model_dump().get("interviewSession")
+                    if existing_attempt
+                    else None
+                ),
                 assessmentCount=assessment_count,
                 createdAt=item["createdAt"],
                 updatedAt=now,

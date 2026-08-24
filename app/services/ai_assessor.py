@@ -13,7 +13,12 @@ from openai.types.shared_params.response_format_json_object import (
     ResponseFormatJSONObject,
 )
 
-from app.models.request_models import AssessmentRequest
+from app.models.request_models import (
+    AssessmentRequest,
+    InterviewQuestionsRequest,
+    InterviewRequest,
+)
+from app.models.reasoning_models import InterviewQuestionsResponse, InterviewResponse
 from app.models.response_models import (
     AssessmentSource,
     AssessmentResponse,
@@ -24,7 +29,11 @@ from app.models.response_models import (
     ScoreBreakdown,
     ValidationFeedback,
 )
-from app.utils.prompts import get_assessment_prompt
+from app.utils.prompts import (
+    get_assessment_prompt,
+    get_interview_prompt,
+    get_interview_questions_prompt,
+)
 from app.utils.config import get_settings
 
 
@@ -241,6 +250,130 @@ class AIAssessorService:
                 request,
                 processing_time_ms=int((time.time() - start_time) * 1000),
             )
+
+    async def generate_interview_questions(
+        self, request: InterviewQuestionsRequest
+    ) -> InterviewQuestionsResponse:
+        """Generate questions for the pre-assessment interview dialog."""
+        prompt = get_interview_questions_prompt(request)
+        messages: list[ChatCompletionMessageParam] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a precise system-design interviewer. "
+                    "Return only the requested JSON object."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        response_format: ResponseFormatJSONObject = {"type": "json_object"}
+        is_reasoning_model = self.settings.openai_model.lower().startswith(
+            ("gpt-5", "o1", "o3", "o4")
+        )
+
+        if is_reasoning_model:
+            response = await self.client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                max_completion_tokens=self.settings.openai_assessment_max_tokens,
+                response_format=response_format,
+                reasoning_effort=cast(
+                    ReasoningEffort,
+                    self.settings.openai_assessment_reasoning_effort,
+                ),
+            )
+        else:
+            response = await self.client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                max_completion_tokens=self.settings.openai_assessment_max_tokens,
+                response_format=response_format,
+                temperature=self.settings.openai_temperature,
+            )
+
+        choice = response.choices[0] if response.choices else None
+        content = choice.message.content if choice else None
+        result = self._parse_json_response(content)
+        raw_questions = result.get("questions", [])
+        questions = (
+            [
+                question.strip()
+                for question in cast(list[object], raw_questions)
+                if isinstance(question, str) and question.strip()
+            ]
+            if isinstance(raw_questions, list)
+            else []
+        )
+
+        if not questions:
+            raise ValueError("AI interview response did not include questions")
+
+        return InterviewQuestionsResponse(questions=questions[:5])
+
+    async def critique_interview_answer(
+        self, request: InterviewRequest
+    ) -> InterviewResponse:
+        """Critique one answer while reusing the assessment AI configuration."""
+        prompt = get_interview_prompt(request)
+        messages: list[ChatCompletionMessageParam] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a rigorous but supportive system-design interviewer. "
+                    "Return only the requested JSON object and keep the candidate thinking."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        response_format: ResponseFormatJSONObject = {"type": "json_object"}
+        is_reasoning_model = self.settings.openai_model.lower().startswith(
+            ("gpt-5", "o1", "o3", "o4")
+        )
+
+        if is_reasoning_model:
+            response = await self.client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                max_completion_tokens=self.settings.openai_assessment_max_tokens,
+                response_format=response_format,
+                reasoning_effort=cast(
+                    ReasoningEffort,
+                    self.settings.openai_assessment_reasoning_effort,
+                ),
+            )
+        else:
+            response = await self.client.chat.completions.create(
+                model=self.settings.openai_model,
+                messages=messages,
+                max_completion_tokens=self.settings.openai_assessment_max_tokens,
+                response_format=response_format,
+                temperature=self.settings.openai_temperature,
+            )
+
+        choice = response.choices[0] if response.choices else None
+        content = choice.message.content if choice else None
+        result = self._parse_json_response(content)
+
+        critique = result.get("critique")
+        if not isinstance(critique, str) or not critique.strip():
+            raise ValueError("AI interview response must include a critique")
+
+        def string_list(field: str) -> list[str]:
+            value = result.get(field, [])
+            if not isinstance(value, list):
+                return []
+            return [item for item in cast(list[object], value) if isinstance(item, str)]
+
+        next_question = result.get("next_question")
+        if next_question is not None and not isinstance(next_question, str):
+            next_question = None
+
+        return InterviewResponse(
+            critique=critique.strip(),
+            strengths=string_list("strengths"),
+            gaps=string_list("gaps"),
+            nextQuestion=next_question.strip() if isinstance(next_question, str) else None,
+        )
 
     # ------------------------------------------------------------------
     # Post-processing

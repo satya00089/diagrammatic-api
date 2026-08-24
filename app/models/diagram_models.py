@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, cast
 from pydantic import BaseModel, Field
 from enum import Enum
 
+from app.models.reasoning_models import ReasoningContext
+
 
 class Permission(str, Enum):
     """Permission levels for diagram sharing."""
@@ -45,6 +47,7 @@ class DiagramCreate(BaseModel):
     description: Optional[str] = Field(None, max_length=1000)
     nodes: List[Any] = Field(default_factory=list)
     edges: List[Any] = Field(default_factory=list)
+    reasoningContext: Optional[ReasoningContext] = None
 
 
 class DiagramUpdate(BaseModel):
@@ -54,6 +57,7 @@ class DiagramUpdate(BaseModel):
     description: Optional[str] = None
     nodes: Optional[List[Any]] = None
     edges: Optional[List[Any]] = None
+    reasoningContext: Optional[ReasoningContext] = None
 
 
 class DiagramResponse(BaseModel):
@@ -65,6 +69,7 @@ class DiagramResponse(BaseModel):
     description: Optional[str] = None
     nodes: List[Any]
     edges: List[Any]
+    reasoningContext: Optional[ReasoningContext] = None
     createdAt: str
     updatedAt: str
     isPublic: bool = Field(
@@ -105,6 +110,7 @@ class Diagram(BaseModel):
     description: Optional[str] = None
     nodes: List[Any]
     edges: List[Any]
+    reasoningContext: Optional[ReasoningContext] = None
     createdAt: str
     updatedAt: str
     isPublic: bool = Field(default=False)

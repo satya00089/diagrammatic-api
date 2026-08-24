@@ -3,6 +3,8 @@
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+from app.models.reasoning_models import InterviewSession, ReasoningContext
+
 
 class AttemptCreate(BaseModel):
     """Request model for creating/updating a problem attempt."""
@@ -19,6 +21,8 @@ class AttemptCreate(BaseModel):
     lastAssessment: Optional[Dict[str, Any]] = Field(
         None, description="Latest assessment result"
     )
+    reasoningContext: Optional[ReasoningContext] = None
+    interviewSession: Optional[InterviewSession] = None
 
 
 class AttemptUpdate(BaseModel):
@@ -28,6 +32,8 @@ class AttemptUpdate(BaseModel):
     edges: Optional[List[Any]] = None
     elapsedTime: Optional[int] = None
     lastAssessment: Optional[Dict[str, Any]] = None
+    reasoningContext: Optional[ReasoningContext] = None
+    interviewSession: Optional[InterviewSession] = None
 
 
 class AttemptResponse(BaseModel):
@@ -49,6 +55,8 @@ class AttemptResponse(BaseModel):
     lastAssessment: Optional[Dict[str, Any]] = Field(
         None, description="Latest assessment result"
     )
+    reasoningContext: Optional[ReasoningContext] = None
+    interviewSession: Optional[InterviewSession] = None
     assessmentCount: int = Field(default=0, description="Number of assessments run")
     createdAt: str = Field(..., description="When the attempt was first created")
     updatedAt: str = Field(..., description="When the attempt was last updated")
