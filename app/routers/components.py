@@ -318,6 +318,6 @@ def _decode_pagination_key(encoded_key: str) -> Dict[str, Any]:
     try:
         decoded = base64.b64decode(encoded_key).decode("utf-8")
         return json.loads(decoded)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         logger.warning("Invalid pagination key: %s", exc)
         return {}
