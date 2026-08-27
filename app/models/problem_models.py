@@ -62,6 +62,14 @@ class ProblemSummary(ProblemModel):
     has_guided_walkthrough: bool = False
 
 
+class ProblemPage(BaseModel):
+    """Cursor-paginated problem summaries for the public catalog."""
+
+    items: list[ProblemSummary]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
 class ProblemDetail(ProblemModel):
     """Model for detailed problem data (used in /problem/{id} endpoint)."""
 
