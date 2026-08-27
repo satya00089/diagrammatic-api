@@ -1,10 +1,13 @@
 """API router for problem-related endpoints."""
 
+import base64
+import binascii
+import json
 import logging
 from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from app.models.problem_models import ProblemSummary, ProblemDetail
+from app.models.problem_models import ProblemPage, ProblemSummary, ProblemDetail
 from app.services.dynamodb_service import dynamodb_service
 from app.routers.auth import get_current_user
 
@@ -22,7 +25,9 @@ async def get_all_problems(
         Optional[str],
         Query(description="Filter by difficulty (easy/medium/hard/very hard)"),
     ] = None,
-) -> List[ProblemSummary]:
+    limit: Annotated[int, Query(ge=1, le=100)] = 24,
+    cursor: Annotated[Optional[str], Query()] = None,
+) -> ProblemPage:
     """
     Get all problems with summary information, sorted from easy to very hard.
 
@@ -31,19 +36,37 @@ async def get_all_problems(
         difficulty: Optional filter by difficulty ('easy', 'medium', 'hard', 'very hard')
 
     Returns:
-        List of problems with id, title, description, difficulty, category,
-        estimatedTime, tags, and companies. Sorted by difficulty: easy -> medium -> hard -> very hard.
+        One page of problems and an opaque cursor for the next page.
     """
     try:
-        # Filter by category if provided
-        if category:
-            problems = dynamodb_service.get_problems_by_category(category)
-        # Filter by difficulty if provided
-        elif difficulty:
-            problems = dynamodb_service.get_problems_by_difficulty(difficulty)
-        # Get all problems if no filters
-        else:
-            problems = dynamodb_service.get_all_problems()
+        # Pagination is currently based on the base table scan. The existing
+        # category/difficulty filters are applied to the returned page so the
+        # public response remains backward-compatible while the catalog moves
+        # away from loading the full table at once.
+        start_key = None
+        if cursor:
+            try:
+                start_key = json.loads(
+                    base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+                )
+            except (
+                TypeError,
+                ValueError,
+                UnicodeDecodeError,
+                binascii.Error,
+                json.JSONDecodeError,
+            ) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid problems cursor",
+                ) from exc
+
+        problems, next_key = dynamodb_service.get_problems_page(
+            limit,
+            start_key,
+            category=category,
+            difficulty=difficulty,
+        )
 
         # Convert DynamoDB items to ProblemSummary models
         problem_list = [ProblemSummary(**problem) for problem in problems]
@@ -52,7 +75,17 @@ async def get_all_problems(
         difficulty_order = {"easy": 1, "medium": 2, "hard": 3, "very hard": 4}
         problem_list.sort(key=lambda p: difficulty_order.get(p.difficulty.lower(), 5))
 
-        return problem_list
+        next_cursor = None
+        if next_key:
+            next_cursor = base64.urlsafe_b64encode(
+                json.dumps(next_key, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii")
+
+        return ProblemPage(
+            items=problem_list,
+            next_cursor=next_cursor,
+            has_more=next_cursor is not None,
+        )
     except Exception as exc:
         logger.exception("Error in get_all_problems")
         raise HTTPException(
@@ -86,6 +119,27 @@ async def get_problem_by_id(problem_id: str) -> ProblemDetail:
         raise
     except Exception as exc:
         logger.exception("Error in get_problem_by_id")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch problem from database",
+        ) from exc
+
+
+@router.get("/problem/slug/{slug}")
+async def get_problem_by_slug(slug: str) -> ProblemDetail:
+    """Get a specific problem by its public slug."""
+    try:
+        problem = dynamodb_service.get_problem_by_slug(slug)
+        if not problem:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Problem with slug '{slug}' not found",
+            )
+        return ProblemDetail(**problem)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error in get_problem_by_slug")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch problem from database",

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, cast
 from uuid import uuid4
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 from mypy_boto3_dynamodb.service_resource import Table
 
@@ -705,11 +705,57 @@ class DynamoDBService:
         except ClientError:
             return []
 
+    def get_problems_page(
+        self,
+        limit: int,
+        exclusive_start_key: Optional[Dict[str, Any]] = None,
+        category: Optional[str] = None,
+        difficulty: Optional[str] = None,
+    ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """Get one page of problem summaries and DynamoDB's continuation key."""
+        try:
+            scan_params: Dict[str, Any] = {"Limit": limit}
+            if exclusive_start_key:
+                scan_params["ExclusiveStartKey"] = exclusive_start_key
+
+            filters = []
+            if category:
+                filters.append(Attr("category").eq(category))
+            if difficulty:
+                filters.append(Attr("difficulty").eq(difficulty))
+            if filters:
+                filter_expression = filters[0]
+                for current_filter in filters[1:]:
+                    filter_expression = filter_expression & current_filter
+                scan_params["FilterExpression"] = filter_expression
+
+            response = self.problems_table.scan(**scan_params)
+            return response.get("Items", []), response.get("LastEvaluatedKey")
+        except ClientError:
+            return [], None
+
     def get_problem_by_id(self, problem_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific problem by ID."""
         try:
             response = self.problems_table.get_item(Key={"id": problem_id})
             return response.get("Item")
+        except ClientError:
+            return None
+
+    def get_problem_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Get a problem by its public slug."""
+        try:
+            scan_params: Dict[str, Any] = {
+                "FilterExpression": Attr("slug").eq(slug),
+            }
+            while True:
+                response = self.problems_table.scan(**scan_params)
+                items = response.get("Items", [])
+                if items:
+                    return items[0]
+                if "LastEvaluatedKey" not in response:
+                    return None
+                scan_params["ExclusiveStartKey"] = response["LastEvaluatedKey"]
         except ClientError:
             return None
 
