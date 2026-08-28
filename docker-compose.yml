@@ -9,6 +9,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
       - DEBUG=${DEBUG:-false}
+      - REDIS_URI=${REDIS_URI:-redis://redis:6379/0}
     env_file:
       - .env
     restart: unless-stopped

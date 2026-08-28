@@ -32,5 +32,7 @@ class AnalyticsEventBatch(BaseModel):
     anon_id: Optional[str] = Field(
         None, description="Anonymous client id (when not authenticated)"
     )
-    session_id: str = Field(..., description="Stable browser session id")
+    session_id: str = Field(
+        ..., min_length=1, max_length=128, description="Ephemeral browser session id"
+    )
     events: List[AnalyticsEvent] = Field(..., description="Ordered list of events")

@@ -30,7 +30,9 @@ async def ingest_analytics_batch(
 
     # For a cookie-less, aggregated pipeline we do NOT persist IPs or user ids.
     # Instead, aggregate event counts server-side into daily counters.
-    background_tasks.add_task(s3_analytics_aggregator.aggregate_events, batch.events)
+    background_tasks.add_task(
+        s3_analytics_aggregator.aggregate_events, batch.events, batch.session_id
+    )
 
     logger.debug("Queued %d analytics events for aggregation", len(batch.events))
 
