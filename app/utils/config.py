@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     api_host: str = Field("0.0.0.0", validation_alias="API_HOST")
     api_port: int = Field(8000, validation_alias="API_PORT")
     debug: bool = Field(False, validation_alias="DEBUG")
+    sentry_dsn: str | None = Field(None, validation_alias="SENTRY_DSN")
+    sentry_environment: str = Field(
+        "production", validation_alias="SENTRY_ENVIRONMENT"
+    )
 
     # CORS Configuration
     allowed_origins: list[str] = Field(
@@ -116,6 +120,12 @@ class Settings(BaseSettings):
     # HMAC secret used to pseudonymize user IDs for analytics storage.
     analytics_hmac_secret: str | None = Field(
         None, validation_alias="ANALYTICS_HMAC_SECRET"
+    )
+
+    # Redis is the hot aggregation store; S3 receives periodic snapshots.
+    redis_uri: str | None = Field(None, validation_alias="REDIS_URI")
+    analytics_flush_interval_seconds: int = Field(
+        60, validation_alias="ANALYTICS_FLUSH_INTERVAL_SECONDS"
     )
 
     # Whisper transcription service (proxied so the browser never calls it directly)

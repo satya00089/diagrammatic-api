@@ -1,8 +1,13 @@
 """Main application file for the Diagrammatic API service."""
 
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import sys
+
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -29,10 +34,38 @@ from app.routers import (
 )
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.services.dynamodb_service import dynamodb_service
+from app.services.s3_analytics_aggregator import redis_analytics_aggregator
 
 # Load settings
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+async def _analytics_flush_loop() -> None:
+    """Periodically export Redis analytics snapshots to S3."""
+    interval = max(10, settings.analytics_flush_interval_seconds)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            flushed = await asyncio.to_thread(redis_analytics_aggregator.flush_pending)
+            if flushed:
+                logger.info("Flushed %d analytics snapshot(s) to S3", flushed)
+        except Exception:
+            logger.exception("Analytics Redis-to-S3 flush failed")
+
+
+def _configure_error_monitoring() -> None:
+    if not settings.sentry_dsn:
+        return
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        send_default_pii=False,
+        traces_sample_rate=0.0,
+        integrations=[FastApiIntegration(), StarletteIntegration()],
+    )
+    logger.info("Sentry error monitoring enabled environment=%s", settings.sentry_environment)
 
 
 def _configure_app_logging(debug: bool) -> None:
@@ -58,6 +91,7 @@ def _configure_app_logging(debug: bool) -> None:
 
 
 _configure_app_logging(settings.debug)
+_configure_error_monitoring()
 
 # API version prefix
 API_V1_PREFIX = "/api/v1"
@@ -77,7 +111,12 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logger.exception("Failed to connect to DynamoDB at startup")
 
-    yield
+    flush_task = asyncio.create_task(_analytics_flush_loop())
+    try:
+        yield
+    finally:
+        flush_task.cancel()
+        await asyncio.gather(flush_task, return_exceptions=True)
 
     # Shutdown (might not run on some serverless platforms)
     logger.info("Diagrammatic API shutting down")
