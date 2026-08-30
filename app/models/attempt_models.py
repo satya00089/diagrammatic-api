@@ -6,6 +6,17 @@ from pydantic import BaseModel, Field
 from app.models.reasoning_models import InterviewSession, ReasoningContext
 
 
+class AssessmentHistoryEntry(BaseModel):
+    """Compact summary of a completed assessment for progress tracking."""
+
+    id: str
+    score: int = Field(ge=0, le=100)
+    findingCount: int = Field(default=0, ge=0)
+    createdAt: str
+    source: Optional[str] = None
+    addressedFindingIds: List[str] = Field(default_factory=list)
+
+
 class AttemptCreate(BaseModel):
     """Request model for creating/updating a problem attempt."""
 
@@ -23,6 +34,7 @@ class AttemptCreate(BaseModel):
     )
     reasoningContext: Optional[ReasoningContext] = None
     interviewSession: Optional[InterviewSession] = None
+    addressedFindingIds: List[str] = Field(default_factory=list)
 
 
 class AttemptUpdate(BaseModel):
@@ -34,6 +46,7 @@ class AttemptUpdate(BaseModel):
     lastAssessment: Optional[Dict[str, Any]] = None
     reasoningContext: Optional[ReasoningContext] = None
     interviewSession: Optional[InterviewSession] = None
+    addressedFindingIds: Optional[List[str]] = None
 
 
 class AttemptResponse(BaseModel):
@@ -58,6 +71,8 @@ class AttemptResponse(BaseModel):
     reasoningContext: Optional[ReasoningContext] = None
     interviewSession: Optional[InterviewSession] = None
     assessmentCount: int = Field(default=0, description="Number of assessments run")
+    assessmentHistory: List[AssessmentHistoryEntry] = Field(default_factory=list)
+    addressedFindingIds: List[str] = Field(default_factory=list)
     createdAt: str = Field(..., description="When the attempt was first created")
     updatedAt: str = Field(..., description="When the attempt was last updated")
     lastAttemptedAt: str = Field(..., description="When the problem was last worked on")

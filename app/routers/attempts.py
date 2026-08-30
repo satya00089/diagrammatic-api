@@ -44,6 +44,7 @@ async def create_or_update_attempt(
             if request.interviewSession
             else None
         ),
+        addressed_finding_ids=request.addressedFindingIds,
     )
 
     return attempt

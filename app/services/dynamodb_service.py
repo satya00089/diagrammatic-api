@@ -812,12 +812,15 @@ class DynamoDBService:
         last_assessment: Optional[Dict[str, Any]],
         reasoning_context: Optional[Dict[str, Any]],
         interview_session: Optional[Dict[str, Any]],
+        addressed_finding_ids: Optional[List[str]],
     ) -> tuple[
         int,
         Optional[Dict[str, Any]],
         Optional[Dict[str, Any]],
         Optional[Dict[str, Any]],
         Dict[str, Any],
+        List[Dict[str, Any]],
+        List[str],
     ]:
         existing_data = (
             existing_attempt.model_dump() if existing_attempt is not None else {}
@@ -845,12 +848,33 @@ class DynamoDBService:
             assessment_count += 1
             preserved_assessment = convert_floats_to_decimal(last_assessment)
 
+        preserved_addressed_finding_ids = list(
+            addressed_finding_ids
+            if addressed_finding_ids is not None
+            else existing_data.get("addressedFindingIds", [])
+        )
+        assessment_history = list(existing_data.get("assessmentHistory", []))
+        if last_assessment:
+            assessment_history.append(
+                {
+                    "id": str(last_assessment.get("assessmentId") or f"assessment-{assessment_count}"),
+                    "score": int(last_assessment.get("score", 0)),
+                    "findingCount": len(last_assessment.get("findings", []) or last_assessment.get("feedback", []) or []),
+                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                    "source": last_assessment.get("source"),
+                    "addressedFindingIds": preserved_addressed_finding_ids,
+                }
+            )
+            assessment_history = assessment_history[-10:]
+
         return (
             assessment_count,
             preserved_assessment,
             preserved_reasoning_context,
             preserved_interview_session,
             existing_data,
+            assessment_history,
+            preserved_addressed_finding_ids,
         )
 
     @staticmethod
@@ -867,6 +891,8 @@ class DynamoDBService:
         preserved_reasoning_context: Optional[Dict[str, Any]],
         preserved_interview_session: Optional[Dict[str, Any]],
         assessment_count: int,
+        assessment_history: List[Dict[str, Any]],
+        addressed_finding_ids: List[str],
         now: str,
         existing_attempt: Optional[AttemptResponse],
     ) -> Dict[str, Any]:
@@ -883,6 +909,8 @@ class DynamoDBService:
             "reasoningContext": preserved_reasoning_context,
             "interviewSession": preserved_interview_session,
             "assessmentCount": assessment_count,
+            "assessmentHistory": convert_floats_to_decimal(assessment_history),
+            "addressedFindingIds": addressed_finding_ids,
             "updatedAt": now,
             "lastAttemptedAt": now,
         }
@@ -917,6 +945,8 @@ class DynamoDBService:
         reasoning_context: Optional[Dict[str, Any]],
         interview_session: Optional[Dict[str, Any]],
         assessment_count: int,
+        assessment_history: List[Dict[str, Any]],
+        addressed_finding_ids: List[str],
         item: Dict[str, Any],
         now: str,
         existing_attempt: Optional[AttemptResponse],
@@ -935,6 +965,8 @@ class DynamoDBService:
             reasoningContext=reasoning_context,
             interviewSession=interview_session,
             assessmentCount=assessment_count,
+            assessmentHistory=assessment_history,
+            addressedFindingIds=addressed_finding_ids,
             createdAt=item["createdAt"],
             updatedAt=now,
             lastAttemptedAt=now,
@@ -958,6 +990,7 @@ class DynamoDBService:
         last_assessment: Optional[Dict[str, Any]] = None,
         reasoning_context: Optional[Dict[str, Any]] = None,
         interview_session: Optional[Dict[str, Any]] = None,
+        addressed_finding_ids: Optional[List[str]] = None,
     ) -> AttemptResponse:
         """Create or update a problem attempt (upsert operation)."""
         try:
@@ -969,11 +1002,14 @@ class DynamoDBService:
                 preserved_reasoning_context,
                 preserved_interview_session,
                 existing_data,
+                assessment_history,
+                preserved_addressed_finding_ids,
             ) = self._prepare_attempt_state(
                 existing_attempt,
                 last_assessment,
                 reasoning_context,
                 interview_session,
+                addressed_finding_ids,
             )
             item = self._build_attempt_item(
                 user_id,
@@ -988,6 +1024,8 @@ class DynamoDBService:
                 preserved_reasoning_context,
                 preserved_interview_session,
                 assessment_count,
+                assessment_history,
+                preserved_addressed_finding_ids,
                 now,
                 existing_attempt,
             )
@@ -1013,6 +1051,8 @@ class DynamoDBService:
                 response_reasoning_context,
                 response_interview_session,
                 assessment_count,
+                assessment_history,
+                preserved_addressed_finding_ids,
                 item,
                 now,
                 existing_attempt,
