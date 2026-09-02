@@ -68,6 +68,7 @@ class ProblemPage(BaseModel):
     items: list[ProblemSummary]
     next_cursor: str | None = None
     has_more: bool = False
+    total_count: int | None = None
 
 
 class ProblemDetail(ProblemModel):

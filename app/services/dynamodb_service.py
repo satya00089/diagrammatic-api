@@ -773,6 +773,36 @@ class DynamoDBService:
         except ClientError:
             return [], None
 
+    def count_problems(
+        self,
+        category: Optional[str] = None,
+        difficulty: Optional[str] = None,
+    ) -> Optional[int]:
+        """Count all matching problems without loading their attributes."""
+        try:
+            scan_params: Dict[str, Any] = {"Select": "COUNT"}
+            filters = []
+            if category:
+                filters.append(Attr("category").eq(category))
+            if difficulty:
+                filters.append(Attr("difficulty").eq(difficulty))
+            if filters:
+                filter_expression = filters[0]
+                for current_filter in filters[1:]:
+                    filter_expression = filter_expression & current_filter
+                scan_params["FilterExpression"] = filter_expression
+
+            total = 0
+            while True:
+                response = self.problems_table.scan(**scan_params)
+                total += int(response.get("Count") or 0)
+                last_key = response.get("LastEvaluatedKey")
+                if not last_key:
+                    return total
+                scan_params["ExclusiveStartKey"] = last_key
+        except ClientError:
+            return None
+
     def get_problem_by_id(self, problem_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific problem by ID."""
         try:

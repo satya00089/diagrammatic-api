@@ -9,6 +9,7 @@ from typing import Annotated, Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from app.models.problem_models import ProblemPage, ProblemSummary, ProblemDetail
 from app.services.dynamodb_service import dynamodb_service
+from app.services.problem_catalog_cache import problem_catalog_count_cache
 from app.routers.auth import get_current_user
 
 
@@ -61,31 +62,55 @@ async def get_all_problems(
                     detail="Invalid problems cursor",
                 ) from exc
 
-        problems, next_key = dynamodb_service.get_problems_page(
+        def load_page() -> Dict[str, Any]:
+            problems, next_key = dynamodb_service.get_problems_page(
+                limit,
+                start_key,
+                category=category,
+                difficulty=difficulty,
+            )
+
+            # Convert DynamoDB items to ProblemSummary models
+            problem_list = [ProblemSummary(**problem) for problem in problems]
+
+            # Sort by difficulty: easy -> medium -> hard -> very hard
+            difficulty_order = {"easy": 1, "medium": 2, "hard": 3, "very hard": 4}
+            problem_list.sort(key=lambda p: difficulty_order.get(p.difficulty.lower(), 5))
+
+            total_count = problem_catalog_count_cache.get_or_load(
+                category,
+                difficulty,
+                dynamodb_service.count_problems,
+            )
+
+            next_cursor = None
+            if next_key:
+                next_cursor = base64.urlsafe_b64encode(
+                    json.dumps(next_key, separators=(",", ":")).encode("utf-8")
+                ).decode("ascii")
+
+            return ProblemPage(
+                items=problem_list,
+                next_cursor=next_cursor,
+                has_more=next_cursor is not None,
+                total_count=total_count,
+            ).model_dump(mode="json")
+
+        page_payload = problem_catalog_count_cache.get_page_or_load(
+            category,
+            difficulty,
             limit,
-            start_key,
-            category=category,
-            difficulty=difficulty,
+            cursor,
+            load_page,
         )
-
-        # Convert DynamoDB items to ProblemSummary models
-        problem_list = [ProblemSummary(**problem) for problem in problems]
-
-        # Sort by difficulty: easy -> medium -> hard -> very hard
-        difficulty_order = {"easy": 1, "medium": 2, "hard": 3, "very hard": 4}
-        problem_list.sort(key=lambda p: difficulty_order.get(p.difficulty.lower(), 5))
-
-        next_cursor = None
-        if next_key:
-            next_cursor = base64.urlsafe_b64encode(
-                json.dumps(next_key, separators=(",", ":")).encode("utf-8")
-            ).decode("ascii")
-
-        return ProblemPage(
-            items=problem_list,
-            next_cursor=next_cursor,
-            has_more=next_cursor is not None,
-        )
+        if page_payload is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Problem catalog is temporarily unavailable",
+            )
+        return ProblemPage.model_validate(page_payload)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Error in get_all_problems")
         raise HTTPException(
