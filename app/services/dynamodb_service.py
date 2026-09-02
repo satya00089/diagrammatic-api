@@ -14,6 +14,7 @@ from app.utils.config import get_settings
 from app.models.auth_models import User
 from app.models.diagram_models import Diagram, Collaborator, Permission, PublicDiagramResponse
 from app.models.attempt_models import AttemptResponse, PublicSolutionResponse, LeaderboardEntry
+from app.models.feedback_models import FeedbackCreate, FeedbackResponse
 
 settings = get_settings()
 
@@ -70,6 +71,7 @@ class DynamoDBService:
         self.diagrams_table: Table = dynamodb.Table(settings.dynamodb_diagrams_table)
         self.problems_table: Table = dynamodb.Table(settings.dynamodb_problems_table)
         self.attempts_table: Table = dynamodb.Table(settings.dynamodb_attempts_table)
+        self.feedback_table: Table = dynamodb.Table(settings.dynamodb_feedback_table)
         self.walkthroughs_table: Table = dynamodb.Table(settings.dynamodb_walkthroughs_table)
 
     # User operations
@@ -311,6 +313,43 @@ class DynamoDBService:
             return None
         except ClientError:
             return None
+
+    # Product feedback operations
+    def create_feedback(
+        self, feedback: FeedbackCreate, user_id: Optional[str] = None
+    ) -> FeedbackResponse:
+        """Persist a single user feedback item without storing canvas content."""
+        feedback_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        item: Dict[str, Any] = {
+            "id": feedback_id,
+            "createdAt": now,
+            "updatedAt": now,
+            "status": "new",
+            "source": feedback.source.value,
+            "category": feedback.category.value,
+            "message": feedback.message,
+            "reasons": [reason.value for reason in feedback.reasons],
+            "context": feedback.context.model_dump(exclude_none=True),
+        }
+        if feedback.rating is not None:
+            item["rating"] = feedback.rating
+        if feedback.helpful is not None:
+            item["helpful"] = feedback.helpful
+        if feedback.contactEmail:
+            item["contactEmail"] = str(feedback.contactEmail)
+        if feedback.route:
+            item["route"] = feedback.route
+        if feedback.appVersion:
+            item["appVersion"] = feedback.appVersion
+        if user_id:
+            item["userId"] = user_id
+
+        self.feedback_table.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(id)",
+        )
+        return FeedbackResponse(id=feedback_id, createdAt=now)
 
     def update_user_google_id(
         self, user_id: str, google_id: str, picture: Optional[str] = None
