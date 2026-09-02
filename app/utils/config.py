@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     dynamodb_attempts_table: str = Field(
         "diagrammatic_problem_attempts", validation_alias="DYNAMODB_ATTEMPTS_TABLE"
     )
+    dynamodb_feedback_table: str = Field(
+        "diagrammatic_feedback", validation_alias="DYNAMODB_FEEDBACK_TABLE"
+    )
     # Frontend URL (used to build public solution links)
     frontend_url: str = Field(
         "https://diagrammatic.next-zen.dev",

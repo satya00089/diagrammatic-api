@@ -31,6 +31,7 @@ from app.routers import (
     analytics,
     learning_paths,
     transcriptions,
+    feedback,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.services.dynamodb_service import dynamodb_service
@@ -170,6 +171,7 @@ app.include_router(
 app.include_router(sprites.router, tags=["sprites"])
 app.include_router(learning_paths.router, prefix=API_V1_PREFIX, tags=["learning-paths"])
 app.include_router(transcriptions.router, prefix=API_V1_PREFIX, tags=["transcriptions"])
+app.include_router(feedback.router, prefix=API_V1_PREFIX, tags=["feedback"])
 
 
 @app.get("/")
