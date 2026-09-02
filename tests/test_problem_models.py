@@ -1,6 +1,11 @@
 """Tests for public problem response models."""
 
-from app.models.problem_models import ProblemDetail, ProblemSummary, problem_slug
+from app.models.problem_models import (
+    ProblemDetail,
+    ProblemPage,
+    ProblemSummary,
+    problem_slug,
+)
 
 
 def problem_data() -> dict[str, object]:
@@ -37,3 +42,9 @@ def test_problem_detail_preserves_existing_slug() -> None:
     assert detail.slug == "custom-slug"
     assert detail.created_at is None
     assert detail.updated_at is None
+
+
+def test_problem_page_exposes_authoritative_total_count() -> None:
+    page = ProblemPage(items=[], total_count=145)
+
+    assert page.total_count == 145
