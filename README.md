@@ -8,6 +8,22 @@ A Python FastAPI application that provides AI-powered assessment for system desi
 2. Create `.env` file with your OpenAI API key: `OPENAI_API_KEY=your_key_here`
 3. Run: `uvicorn app.main:app --reload` or `docker-compose up --build`
 
+### Optional Langfuse observability
+
+The API uses Langfuse's OpenAI integration only when both
+`LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. Without those
+values, or when `LANGFUSE_ENABLED=false`, the service uses the normal OpenAI
+client and emits no Langfuse telemetry. Set `LANGFUSE_BASE_URL` to a
+self-hosted Langfuse URL later without changing application code.
+
+Tracing is named by product capability (`assessment.evaluate-design`,
+`interview.generate-questions`, `interview.critique-answer`,
+`recommendations.generate`, and `share.generate-article`) and includes only
+safe request dimensions such as counts and feature tags. Prompt and completion
+content is excluded by default; enable `LANGFUSE_CAPTURE_CONTENT=true` only
+after reviewing the data policy for the environment. Langfuse failures never
+fail an AI request.
+
 ## API Usage
 
 - **POST** `/api/v1/assess` - Assess a system design

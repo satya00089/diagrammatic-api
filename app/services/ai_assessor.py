@@ -6,7 +6,6 @@ import logging
 import re
 import time
 
-from openai import AsyncOpenAI
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.response_format_json_object import (
@@ -35,6 +34,7 @@ from app.utils.prompts import (
     get_interview_questions_prompt,
 )
 from app.utils.config import get_settings
+from app.services.llm_client import create_llm_client, langfuse_options
 
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ class AIAssessorService:
 
     def __init__(self):
         self.settings = get_settings()
-        self.client = AsyncOpenAI(api_key=self.settings.openai_api_key)
+        self.client = create_llm_client(self.settings)
 
     # ------------------------------------------------------------------
     # Coverage helpers
@@ -166,6 +166,16 @@ class AIAssessorService:
                         ReasoningEffort,
                         self.settings.openai_assessment_reasoning_effort,
                     ),
+                    **langfuse_options(
+                        self.settings,
+                        name="assessment.evaluate-design",
+                        tags=("assessment", "design"),
+                        metadata={
+                            "component_count": len(request.components),
+                            "connection_count": len(request.connections or []),
+                            "has_problem": request.problem is not None,
+                        },
+                    ),
                 )
             else:
                 response = await self.client.chat.completions.create(
@@ -174,6 +184,16 @@ class AIAssessorService:
                     max_completion_tokens=self.settings.openai_assessment_max_tokens,
                     response_format=response_format,
                     temperature=self.settings.openai_temperature,
+                    **langfuse_options(
+                        self.settings,
+                        name="assessment.evaluate-design",
+                        tags=("assessment", "design"),
+                        metadata={
+                            "component_count": len(request.components),
+                            "connection_count": len(request.connections or []),
+                            "has_problem": request.problem is not None,
+                        },
+                    ),
                 )
 
             # Keep the complete provider payload available during local
@@ -281,6 +301,11 @@ class AIAssessorService:
                     ReasoningEffort,
                     self.settings.openai_assessment_reasoning_effort,
                 ),
+                **langfuse_options(
+                    self.settings,
+                    name="interview.generate-questions",
+                    tags=("interview", "questions"),
+                ),
             )
         else:
             response = await self.client.chat.completions.create(
@@ -289,6 +314,11 @@ class AIAssessorService:
                 max_completion_tokens=self.settings.openai_assessment_max_tokens,
                 response_format=response_format,
                 temperature=self.settings.openai_temperature,
+                **langfuse_options(
+                    self.settings,
+                    name="interview.generate-questions",
+                    tags=("interview", "questions"),
+                ),
             )
 
         choice = response.choices[0] if response.choices else None
@@ -340,6 +370,11 @@ class AIAssessorService:
                     ReasoningEffort,
                     self.settings.openai_assessment_reasoning_effort,
                 ),
+                **langfuse_options(
+                    self.settings,
+                    name="interview.critique-answer",
+                    tags=("interview", "critique"),
+                ),
             )
         else:
             response = await self.client.chat.completions.create(
@@ -348,6 +383,11 @@ class AIAssessorService:
                 max_completion_tokens=self.settings.openai_assessment_max_tokens,
                 response_format=response_format,
                 temperature=self.settings.openai_temperature,
+                **langfuse_options(
+                    self.settings,
+                    name="interview.critique-answer",
+                    tags=("interview", "critique"),
+                ),
             )
 
         choice = response.choices[0] if response.choices else None

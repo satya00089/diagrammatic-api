@@ -36,6 +36,7 @@ from app.routers import (
 from app.middleware.rate_limiter import RateLimitMiddleware
 from app.services.dynamodb_service import dynamodb_service
 from app.services.s3_analytics_aggregator import redis_analytics_aggregator
+from app.services.llm_client import flush_langfuse
 
 # Load settings
 settings = get_settings()
@@ -118,6 +119,7 @@ async def lifespan(_app: FastAPI):
     finally:
         flush_task.cancel()
         await asyncio.gather(flush_task, return_exceptions=True)
+        flush_langfuse(settings)
 
     # Shutdown (might not run on some serverless platforms)
     logger.info("Diagrammatic API shutting down")

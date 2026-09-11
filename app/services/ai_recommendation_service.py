@@ -13,7 +13,6 @@ import json
 import time
 from typing import Any, Dict, List, Optional, TypeAlias, cast
 
-from openai import AsyncOpenAI
 from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
 
 from app.models.recommendation_models import (
@@ -33,6 +32,7 @@ from app.services.recommendation_interfaces import (
 )
 from app.services.confidence_based_filter import ConfidenceBasedFilter
 from app.services.context_aware_enricher import ContextAwareEnricher
+from app.services.llm_client import create_llm_client, langfuse_options
 
 
 JsonObject: TypeAlias = Dict[str, Any]
@@ -62,7 +62,7 @@ class AIRecommendationService:
             recommendation_enricher: Strategy for enriching recommendations
         """
         self.settings = get_settings()
-        self.client = AsyncOpenAI(api_key=self.settings.openai_api_key)
+        self.client = create_llm_client(self.settings)
 
         # Depend on abstractions, inject dependencies
         self.filter = recommendation_filter or ConfidenceBasedFilter()
@@ -123,6 +123,19 @@ class AIRecommendationService:
             }
             if not self.settings.openai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
                 completion_options["temperature"] = self.settings.openai_temperature
+
+            completion_options.update(
+                langfuse_options(
+                    self.settings,
+                    name="recommendations.generate",
+                    tags=("recommendations",),
+                    metadata={
+                        "component_count": request.canvas_context.node_count,
+                        "connection_count": request.canvas_context.edge_count,
+                        "force_refresh": request.force_refresh,
+                    },
+                )
+            )
 
             response = await self.client.chat.completions.create(**completion_options)
 
