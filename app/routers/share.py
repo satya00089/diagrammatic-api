@@ -16,6 +16,7 @@ from app.models.diagram_models import PublicDiagramResponse, PublishDiagramRespo
 from app.services.dynamodb_service import dynamodb_service
 from app.routers.auth import get_current_user
 from app.utils.config import get_settings
+from app.services.llm_client import create_llm_client, langfuse_options
 
 router = APIRouter()
 
@@ -254,10 +255,8 @@ async def generate_share_article(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Generate platform-specific share content using AI."""
-    from openai import AsyncOpenAI
-
     settings = get_settings()
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = create_llm_client(settings)
 
     author_name = (
         current_user.get("name") or current_user.get("email", "I").split("@")[0]
@@ -292,6 +291,18 @@ Return JSON with keys: linkedinPost, twitterPost, mediumArticle."""
     }
     if not settings.openai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
         completion_options["temperature"] = settings.openai_temperature
+
+    completion_options.update(
+        langfuse_options(
+            settings,
+            name="share.generate-article",
+            tags=("share", "content"),
+            metadata={
+                "node_count": payload.nodeCount,
+                "edge_count": payload.edgeCount,
+            },
+        )
+    )
 
     response = await client.chat.completions.create(**completion_options)
 

@@ -24,6 +24,31 @@ class Settings(BaseSettings):
     )
     openai_temperature: float = Field(0.3, validation_alias="OPENAI_TEMPERATURE")
 
+    # Optional Langfuse observability. Both keys are required before tracing
+    # is activated; the base URL supports Cloud and self-hosted deployments.
+    langfuse_enabled: bool = Field(True, validation_alias="LANGFUSE_ENABLED")
+    langfuse_public_key: str | None = Field(
+        None, validation_alias="LANGFUSE_PUBLIC_KEY"
+    )
+    langfuse_secret_key: str | None = Field(
+        None, validation_alias="LANGFUSE_SECRET_KEY"
+    )
+    langfuse_base_url: str = Field(
+        "https://cloud.langfuse.com", validation_alias="LANGFUSE_BASE_URL"
+    )
+    langfuse_environment: str = Field(
+        "production", validation_alias="LANGFUSE_TRACING_ENVIRONMENT"
+    )
+    langfuse_release: str | None = Field(
+        None, validation_alias="LANGFUSE_TRACING_RELEASE"
+    )
+    langfuse_sample_rate: float = Field(
+        1.0, ge=0.0, le=1.0, validation_alias="LANGFUSE_SAMPLE_RATE"
+    )
+    langfuse_capture_content: bool = Field(
+        False, validation_alias="LANGFUSE_CAPTURE_CONTENT"
+    )
+
     # API Configuration
     api_host: str = Field("0.0.0.0", validation_alias="API_HOST")
     api_port: int = Field(8000, validation_alias="API_PORT")
