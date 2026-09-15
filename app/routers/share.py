@@ -4,7 +4,6 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
 from pydantic import BaseModel
 
 from app.models.attempt_models import (
@@ -16,7 +15,8 @@ from app.models.diagram_models import PublicDiagramResponse, PublishDiagramRespo
 from app.services.dynamodb_service import dynamodb_service
 from app.routers.auth import get_current_user
 from app.utils.config import get_settings
-from app.services.llm_client import create_llm_client, langfuse_options
+from app.services.llm_client import create_llm_provider
+from app.services.llm_port import LLMRequest
 
 router = APIRouter()
 
@@ -256,7 +256,7 @@ async def generate_share_article(
 ):
     """Generate platform-specific share content using AI."""
     settings = get_settings()
-    client = create_llm_client(settings)
+    llm = create_llm_provider(settings)
 
     author_name = (
         current_user.get("name") or current_user.get("email", "I").split("@")[0]
@@ -280,22 +280,19 @@ Generate three things:
 
 Return JSON with keys: linkedinPost, twitterPost, mediumArticle."""
 
-    completion_options: CompletionCreateParamsNonStreaming = {
-        "model": settings.openai_model,
-        "messages": [
-            {"role": "system", "content": "You are a helpful technical content writer. Always respond with valid JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "max_completion_tokens": settings.openai_max_tokens,
-        "response_format": {"type": "json_object"},
-    }
-    if not settings.openai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
-        completion_options["temperature"] = settings.openai_temperature
-
-    completion_options.update(
-        langfuse_options(
-            settings,
-            name="share.generate-article",
+    response = await llm.generate(
+        LLMRequest(
+            task="share.generate-article",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful technical content writer. Always respond with valid JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=settings.llm_max_tokens,
+            response_format={"type": "json_object"},
+            temperature=settings.llm_temperature,
             tags=("share", "content"),
             metadata={
                 "node_count": payload.nodeCount,
@@ -304,10 +301,8 @@ Return JSON with keys: linkedinPost, twitterPost, mediumArticle."""
         )
     )
 
-    response = await client.chat.completions.create(**completion_options)
-
     import json
-    result = json.loads(response.choices[0].message.content or "{}")
+    result = json.loads(response.content or "{}")
 
     return ShareArticleResponse(
         linkedinPost=result.get("linkedinPost", ""),

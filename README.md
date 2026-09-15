@@ -5,16 +5,27 @@ A Python FastAPI application that provides AI-powered assessment for system desi
 ## Setup
 
 1. Install dependencies: `pip install -r requirements.txt`
-2. Create `.env` file with your OpenAI API key: `OPENAI_API_KEY=your_key_here`
+2. Configure one LLM provider in `.env`:
+   - OpenAI: `LLM_PROVIDER=openai` and `OPENAI_API_KEY=your_key_here`
+   - Azure OpenAI: `LLM_PROVIDER=azure_openai`, `AZURE_OPENAI_API_KEY`,
+     `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, and
+     `AZURE_OPENAI_DEPLOYMENT`
 3. Run: `uvicorn app.main:app --reload` or `docker-compose up --build`
+
+The application services depend on a provider-neutral LLM port. OpenAI and
+Azure OpenAI request mapping, deployment naming, response normalization, and
+authentication are isolated in the provider adapter. Existing `OPENAI_*`
+model and token variables remain supported; the generic `LLM_*` equivalents
+take precedence when both are present.
 
 ### Optional Langfuse observability
 
-The API uses Langfuse's OpenAI integration only when both
+The API uses Langfuse's provider adapter integration only when both
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are configured. Without those
-values, or when `LANGFUSE_ENABLED=false`, the service uses the normal OpenAI
-client and emits no Langfuse telemetry. Set `LANGFUSE_BASE_URL` to a
-self-hosted Langfuse URL later without changing application code.
+values, or when `LANGFUSE_ENABLED=false`, the service emits no Langfuse
+telemetry. Set `LANGFUSE_BASE_URL` to a self-hosted Langfuse URL later without
+changing application code. If a selected provider does not have a compatible
+Langfuse SDK wrapper installed, the request continues without telemetry.
 
 Tracing is named by product capability (`assessment.evaluate-design`,
 `interview.generate-questions`, `interview.critique-answer`,
