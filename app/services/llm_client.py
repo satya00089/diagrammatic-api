@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Mapping
+from uuid import uuid4
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
@@ -278,6 +279,13 @@ def langfuse_options(
     }
     if metadata:
         trace_metadata.update(metadata)
+    session_id = trace_metadata.get("langfuse_session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        session_id = f"llm-{uuid4()}"
+    # Langfuse's OpenAI integration reads this special metadata field when
+    # assigning the generation to a session. Keep it non-empty even when the
+    # caller does not provide an application-level conversation id.
+    trace_metadata["langfuse_session_id"] = session_id
     return {"name": name, "metadata": trace_metadata}
 
 

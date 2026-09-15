@@ -36,12 +36,27 @@ def test_langfuse_options_include_stable_name_tags_and_safe_metadata() -> None:
     )
 
     assert options["name"] == "assessment.evaluate-design"
-    assert options["metadata"] == {
-        "langfuse_tags": ["diagrammatic", "assessment", "design"],
-        "feature": "assessment.evaluate-design",
-        "component_count": 4,
-        "connection_count": 3,
-    }
+    assert options["metadata"]["langfuse_tags"] == [
+        "diagrammatic",
+        "assessment",
+        "design",
+    ]
+    assert options["metadata"]["feature"] == "assessment.evaluate-design"
+    assert options["metadata"]["component_count"] == 4
+    assert options["metadata"]["connection_count"] == 3
+    assert options["metadata"]["langfuse_session_id"].startswith("llm-")
+
+
+def test_langfuse_options_preserve_explicit_session_id() -> None:
+    settings = make_settings()
+
+    options = langfuse_options(
+        settings,
+        name="interview.generate-questions",
+        metadata={"langfuse_session_id": "browser-session-123"},
+    )
+
+    assert options["metadata"]["langfuse_session_id"] == "browser-session-123"
 
 
 def test_langfuse_enabled_flag_can_turn_tracing_off() -> None:
