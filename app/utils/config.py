@@ -4,25 +4,66 @@ from functools import lru_cache
 from typing import Literal
 
 from pydantic_settings import BaseSettings
-from pydantic import Field, ValidationError
+from pydantic import AliasChoices, Field, ValidationError
 
 
 class Settings(BaseSettings):
     """Application configuration settings."""
 
-    # OpenAI Configuration
-    openai_api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
-    openai_model: str = Field("gpt-4o-mini", validation_alias="OPENAI_MODEL")
-    openai_max_tokens: int = Field(2000, validation_alias="OPENAI_MAX_TOKENS")
-    openai_assessment_max_tokens: int = Field(
-        6000, validation_alias="OPENAI_ASSESSMENT_MAX_TOKENS"
+    # LLM provider configuration. Existing OPENAI_* names remain supported so
+    # switching providers does not require changing the current deployment at
+    # the same time as the application code.
+    llm_provider: Literal["openai", "azure_openai"] = Field(
+        "openai", validation_alias="LLM_PROVIDER"
     )
-    openai_assessment_reasoning_effort: Literal[
+    openai_api_key: str | None = Field(None, validation_alias="OPENAI_API_KEY")
+    llm_model: str = Field(
+        "gpt-4o-mini",
+        validation_alias=AliasChoices("LLM_MODEL", "OPENAI_MODEL"),
+    )
+    llm_max_tokens: int = Field(
+        2000, validation_alias=AliasChoices("LLM_MAX_TOKENS", "OPENAI_MAX_TOKENS")
+    )
+    llm_assessment_max_tokens: int = Field(
+        6000,
+        validation_alias=AliasChoices(
+            "LLM_ASSESSMENT_MAX_TOKENS", "OPENAI_ASSESSMENT_MAX_TOKENS"
+        ),
+    )
+    llm_assessment_reasoning_effort: Literal[
         "none", "low", "medium", "high", "xhigh", "max"
     ] = Field(
-        "low", validation_alias="OPENAI_ASSESSMENT_REASONING_EFFORT"
+        "low",
+        validation_alias=AliasChoices(
+            "LLM_ASSESSMENT_REASONING_EFFORT",
+            "OPENAI_ASSESSMENT_REASONING_EFFORT",
+        ),
     )
-    openai_temperature: float = Field(0.3, validation_alias="OPENAI_TEMPERATURE")
+    llm_temperature: float = Field(
+        0.3, validation_alias=AliasChoices("LLM_TEMPERATURE", "OPENAI_TEMPERATURE")
+    )
+    # Azure deployment names are user-defined and may not reveal whether the
+    # deployed model supports reasoning controls. Leave unset to infer from a
+    # recognizable model name, or set explicitly for custom deployment names.
+    llm_supports_reasoning: bool | None = Field(
+        None, validation_alias="LLM_SUPPORTS_REASONING"
+    )
+
+    # Azure OpenAI uses a resource endpoint, API version, and deployment name.
+    # The key is optional at startup so OpenAI mode remains the default and
+    # managed configuration can validate only the selected provider.
+    azure_openai_api_key: str | None = Field(
+        None, validation_alias="AZURE_OPENAI_API_KEY"
+    )
+    azure_openai_endpoint: str | None = Field(
+        None, validation_alias="AZURE_OPENAI_ENDPOINT"
+    )
+    azure_openai_api_version: str = Field(
+        "2024-10-21", validation_alias="AZURE_OPENAI_API_VERSION"
+    )
+    azure_openai_deployment: str | None = Field(
+        None, validation_alias="AZURE_OPENAI_DEPLOYMENT"
+    )
 
     # Optional Langfuse observability. Both keys are required before tracing
     # is activated; the base URL supports Cloud and self-hosted deployments.

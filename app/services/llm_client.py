@@ -1,8 +1,9 @@
-"""Provider-neutral OpenAI client setup with optional Langfuse tracing.
+"""LLM provider factory and SDK adapters.
 
-Langfuse is deliberately isolated in this module. The application keeps using
-the regular OpenAI client when tracing is disabled, unconfigured, or not
-installed, so telemetry can never become a runtime dependency for AI features.
+Application services depend on :mod:`app.services.llm_port` and never receive
+an OpenAI or Azure SDK client directly. Provider-specific authentication,
+request mapping, response normalization, and optional Langfuse integration
+stay in this module.
 """
 
 from __future__ import annotations
@@ -11,8 +12,9 @@ import logging
 import os
 from typing import Any, Mapping
 
-from openai import AsyncOpenAI
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 
+from app.services.llm_port import LLMPort, LLMRequest, LLMResponse, LLMUsage
 from app.utils.config import Settings, get_settings
 
 
@@ -64,14 +66,70 @@ def _configure_langfuse_environment(settings: Settings) -> None:
         os.environ["LANGFUSE_TRACING_RELEASE"] = settings.langfuse_release
 
 
-def create_llm_client(settings: Settings | None = None) -> AsyncOpenAI:
-    """Create the configured LLM client without making telemetry mandatory."""
-    resolved_settings = settings or get_settings()
-    if not is_langfuse_configured(resolved_settings):
-        return AsyncOpenAI(api_key=resolved_settings.openai_api_key)
+def _provider_name(settings: Settings) -> str:
+    """Return the normalized provider identifier from configuration."""
+
+    return settings.llm_provider.strip().lower()
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """Return whether a model/deployment uses reasoning-model parameters."""
+
+    return model.lower().startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _langfuse_client_class(provider: str) -> Any:
+    """Resolve the optional Langfuse OpenAI-compatible wrapper class."""
+
+    from langfuse import openai as langfuse_openai
+
+    class_name = "AsyncAzureOpenAI" if provider == "azure_openai" else "AsyncOpenAI"
+    return getattr(langfuse_openai, class_name)
+
+
+def _build_sdk_client(settings: Settings) -> tuple[Any, bool]:
+    """Build the selected SDK client, including optional tracing."""
+
+    provider = _provider_name(settings)
+    if provider == "openai":
+        if not settings.openai_api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is required when LLM_PROVIDER=openai"
+            )
+        client_kwargs: dict[str, Any] = {"api_key": settings.openai_api_key}
+    elif provider == "azure_openai":
+        missing = [
+            name
+            for name, value in (
+                ("AZURE_OPENAI_API_KEY", settings.azure_openai_api_key),
+                ("AZURE_OPENAI_ENDPOINT", settings.azure_openai_endpoint),
+                ("AZURE_OPENAI_DEPLOYMENT", settings.azure_openai_deployment),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Azure OpenAI configuration is incomplete; missing "
+                + ", ".join(missing)
+            )
+        client_kwargs = {
+            "api_key": settings.azure_openai_api_key,
+            "azure_endpoint": settings.azure_openai_endpoint,
+            "api_version": settings.azure_openai_api_version,
+        }
+    else:
+        raise ValueError(
+            f"Unsupported LLM_PROVIDER={settings.llm_provider!r}; "
+            "supported values are openai and azure_openai"
+        )
+
+    if not is_langfuse_configured(settings):
+        if provider == "azure_openai":
+            return AsyncAzureOpenAI(**client_kwargs), False
+        return AsyncOpenAI(**client_kwargs), False
 
     global _langfuse_setup_attempted
-    _configure_langfuse_environment(resolved_settings)
+    _configure_langfuse_environment(settings)
 
     try:
         # Import only after environment variables have been loaded. This keeps
@@ -80,35 +138,123 @@ def create_llm_client(settings: Settings | None = None) -> AsyncOpenAI:
             from langfuse import Langfuse
 
             langfuse_options: dict[str, Any] = {
-                "sample_rate": resolved_settings.langfuse_sample_rate,
+                "sample_rate": settings.langfuse_sample_rate,
             }
-            if not resolved_settings.langfuse_capture_content:
+            if not settings.langfuse_capture_content:
                 langfuse_options["mask_otel_spans"] = _mask_otel_spans
             Langfuse(**langfuse_options)
 
             logger.info(
                 "Langfuse tracing enabled environment=%s sample_rate=%s capture_content=%s",
-                resolved_settings.langfuse_environment,
-                resolved_settings.langfuse_sample_rate,
-                resolved_settings.langfuse_capture_content,
+                settings.langfuse_environment,
+                settings.langfuse_sample_rate,
+                settings.langfuse_capture_content,
             )
             _langfuse_setup_attempted = True
 
-        from langfuse.openai import AsyncOpenAI as LangfuseAsyncOpenAI
-        return LangfuseAsyncOpenAI(api_key=resolved_settings.openai_api_key)
+        langfuse_class = _langfuse_client_class(provider)
+        return langfuse_class(**client_kwargs), True
     except ImportError:
         logger.warning(
-            "Langfuse is configured but the optional package is unavailable; "
-            "continuing with OpenAI without telemetry"
+            "Langfuse is configured but the optional package or provider wrapper "
+            "is unavailable; continuing without telemetry"
         )
-        return AsyncOpenAI(api_key=resolved_settings.openai_api_key)
+        if provider == "azure_openai":
+            return AsyncAzureOpenAI(**client_kwargs), False
+        return AsyncOpenAI(**client_kwargs), False
     except Exception:
         # Observability must not take down an assessment request because of a
         # client initialization/configuration issue.
         logger.exception(
             "Langfuse client initialization failed; continuing without telemetry"
         )
-        return AsyncOpenAI(api_key=resolved_settings.openai_api_key)
+        if provider == "azure_openai":
+            return AsyncAzureOpenAI(**client_kwargs), False
+        return AsyncOpenAI(**client_kwargs), False
+
+
+class OpenAICompatibleAdapter:
+    """Adapter for OpenAI and Azure OpenAI chat-completions clients."""
+
+    def __init__(
+        self, client: Any, settings: Settings, *, tracing_enabled: bool = False
+    ) -> None:
+        self._client = client
+        self._settings = settings
+        self._tracing_enabled = tracing_enabled
+        self._provider = _provider_name(settings)
+        self._model = (
+            settings.azure_openai_deployment
+            if self._provider == "azure_openai"
+            else settings.llm_model
+        )
+        self._supports_reasoning = (
+            settings.llm_supports_reasoning
+            if settings.llm_supports_reasoning is not None
+            else _is_reasoning_model(self._model or "")
+        )
+        if not self._model:
+            raise RuntimeError("An LLM model or Azure deployment must be configured")
+
+    async def generate(self, request: LLMRequest) -> LLMResponse:
+        """Map a normalized request to the selected compatible SDK."""
+
+        completion_options: dict[str, Any] = {
+            "model": self._model,
+            "messages": [dict(message) for message in request.messages],
+            "max_completion_tokens": request.max_tokens,
+        }
+        if request.response_format is not None:
+            completion_options["response_format"] = dict(request.response_format)
+
+        if self._supports_reasoning:
+            if request.reasoning_effort is not None:
+                completion_options["reasoning_effort"] = request.reasoning_effort
+        elif request.temperature is not None:
+            completion_options["temperature"] = request.temperature
+
+        if self._tracing_enabled:
+            completion_options.update(
+                langfuse_options(
+                    self._settings,
+                    name=request.task,
+                    tags=request.tags,
+                    metadata=request.metadata,
+                )
+            )
+        response = await self._client.chat.completions.create(**completion_options)
+
+        choice = response.choices[0] if response.choices else None
+        message = choice.message if choice is not None else None
+        usage = response.usage
+        usage_details = getattr(usage, "completion_tokens_details", None)
+        return LLMResponse(
+            content=getattr(message, "content", None),
+            model=getattr(response, "model", self._model),
+            finish_reason=getattr(choice, "finish_reason", None),
+            refusal=getattr(message, "refusal", None),
+            usage=LLMUsage(
+                prompt_tokens=getattr(usage, "prompt_tokens", None),
+                completion_tokens=getattr(usage, "completion_tokens", None),
+                reasoning_tokens=getattr(usage_details, "reasoning_tokens", None),
+            ),
+            raw=response,
+        )
+
+
+def create_llm_provider(settings: Settings | None = None) -> LLMPort:
+    """Create the configured provider adapter for application services."""
+
+    resolved_settings = settings or get_settings()
+    client, tracing_enabled = _build_sdk_client(resolved_settings)
+    return OpenAICompatibleAdapter(
+        client, resolved_settings, tracing_enabled=tracing_enabled
+    )
+
+
+# Backwards-compatible name for callers that used the old factory. It now
+# returns the provider-neutral port rather than an SDK-specific client.
+create_llm_client = create_llm_provider
 
 
 def langfuse_options(

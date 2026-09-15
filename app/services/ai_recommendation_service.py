@@ -13,8 +13,6 @@ import json
 import time
 from typing import Any, Dict, List, Optional, TypeAlias, cast
 
-from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
-
 from app.models.recommendation_models import (
     RecommendationRequest,
     RecommendationResponse,
@@ -32,7 +30,8 @@ from app.services.recommendation_interfaces import (
 )
 from app.services.confidence_based_filter import ConfidenceBasedFilter
 from app.services.context_aware_enricher import ContextAwareEnricher
-from app.services.llm_client import create_llm_client, langfuse_options
+from app.services.llm_client import create_llm_provider
+from app.services.llm_port import LLMPort, LLMRequest
 
 
 JsonObject: TypeAlias = Dict[str, Any]
@@ -53,6 +52,7 @@ class AIRecommendationService:
         self,
         recommendation_filter: Optional[IRecommendationFilter] = None,
         recommendation_enricher: Optional[IRecommendationEnricher] = None,
+        llm: LLMPort | None = None,
     ):
         """
         Initialize service with dependency injection.
@@ -62,7 +62,7 @@ class AIRecommendationService:
             recommendation_enricher: Strategy for enriching recommendations
         """
         self.settings = get_settings()
-        self.client = create_llm_client(self.settings)
+        self.llm = llm or create_llm_provider(self.settings)
 
         # Depend on abstractions, inject dependencies
         self.filter = recommendation_filter or ConfidenceBasedFilter()
@@ -111,23 +111,16 @@ class AIRecommendationService:
             # Build intelligent prompt
             prompt = build_recommendation_prompt(request)
 
-            # GPT-5/o-series reasoning models reject sampling temperature.
-            completion_options: CompletionCreateParamsNonStreaming = {
-                "model": self.settings.openai_model,
-                "messages": [
-                    {"role": "system", "content": get_system_message()},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_completion_tokens": self.settings.openai_max_tokens,
-                "response_format": {"type": "json_object"},
-            }
-            if not self.settings.openai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
-                completion_options["temperature"] = self.settings.openai_temperature
-
-            completion_options.update(
-                langfuse_options(
-                    self.settings,
-                    name="recommendations.generate",
+            response = await self.llm.generate(
+                LLMRequest(
+                    task="recommendations.generate",
+                    messages=[
+                        {"role": "system", "content": get_system_message()},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=self.settings.llm_max_tokens,
+                    response_format={"type": "json_object"},
+                    temperature=self.settings.llm_temperature,
                     tags=("recommendations",),
                     metadata={
                         "component_count": request.canvas_context.node_count,
@@ -137,10 +130,8 @@ class AIRecommendationService:
                 )
             )
 
-            response = await self.client.chat.completions.create(**completion_options)
-
             # Parse AI response
-            ai_result = self._parse_json_response(response.choices[0].message.content)
+            ai_result = self._parse_json_response(response.content)
             raw_recommendations = ai_result.get("recommendations", [])
             if not isinstance(raw_recommendations, list):
                 raise ValueError("AI response field 'recommendations' must be a list")

@@ -6,12 +6,6 @@ import logging
 import re
 import time
 
-from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
-from openai.types.shared.reasoning_effort import ReasoningEffort
-from openai.types.shared_params.response_format_json_object import (
-    ResponseFormatJSONObject,
-)
-
 from app.models.request_models import (
     AssessmentRequest,
     InterviewQuestionsRequest,
@@ -33,8 +27,9 @@ from app.utils.prompts import (
     get_interview_prompt,
     get_interview_questions_prompt,
 )
-from app.utils.config import get_settings
-from app.services.llm_client import create_llm_client, langfuse_options
+from app.utils.config import Settings, get_settings
+from app.services.llm_client import create_llm_provider
+from app.services.llm_port import LLMPort, LLMRequest, LLMResponse
 
 
 logger = logging.getLogger(__name__)
@@ -54,9 +49,36 @@ class Coverage(TypedDict):
 class AIAssessorService:
     """Service to assess system design diagrams using AI and rule-based methods."""
 
-    def __init__(self):
-        self.settings = get_settings()
-        self.client = create_llm_client(self.settings)
+    def __init__(
+        self,
+        llm: LLMPort | None = None,
+        settings: Settings | None = None,
+    ):
+        self.settings = settings or get_settings()
+        self.llm = llm or create_llm_provider(self.settings)
+
+    async def _generate_json(
+        self,
+        *,
+        task: str,
+        messages: list[dict[str, str]],
+        tags: tuple[str, ...] = (),
+        metadata: Mapping[str, object] | None = None,
+    ) -> LLMResponse:
+        """Generate structured content through the provider-neutral port."""
+
+        return await self.llm.generate(
+            LLMRequest(
+                task=task,
+                messages=messages,
+                max_tokens=self.settings.llm_assessment_max_tokens,
+                response_format={"type": "json_object"},
+                temperature=self.settings.llm_temperature,
+                reasoning_effort=self.settings.llm_assessment_reasoning_effort,
+                tags=tags,
+                metadata=metadata or {},
+            )
+        )
 
     # ------------------------------------------------------------------
     # Coverage helpers
@@ -123,8 +145,8 @@ class AIAssessorService:
         logger.info(
             "AI assessment started model=%s max_completion_tokens=%s components=%s "
             "connections=%s has_problem=%s",
-            self.settings.openai_model,
-            self.settings.openai_assessment_max_tokens,
+            self.settings.llm_model,
+            self.settings.llm_assessment_max_tokens,
             len(request.components),
             len(request.connections or []),
             request.problem is not None,
@@ -137,9 +159,7 @@ class AIAssessorService:
             # Generate structured prompt
             prompt = get_assessment_prompt(request)
 
-            # GPT-5/o-series reasoning models reject sampling temperature.
-            # Keep the legacy temperature setting for non-reasoning models.
-            messages: list[ChatCompletionMessageParam] = [
+            messages: list[dict[str, str]] = [
                 {
                     "role": "system",
                     "content": (
@@ -152,77 +172,44 @@ class AIAssessorService:
                 },
                 {"role": "user", "content": prompt},
             ]
-            response_format: ResponseFormatJSONObject = {"type": "json_object"}
-            is_reasoning_model = self.settings.openai_model.lower().startswith(
-                ("gpt-5", "o1", "o3", "o4")
+            response = await self._generate_json(
+                task="assessment.evaluate-design",
+                messages=messages,
+                tags=("assessment", "design"),
+                metadata={
+                    "component_count": len(request.components),
+                    "connection_count": len(request.connections or []),
+                    "has_problem": request.problem is not None,
+                },
             )
-            if is_reasoning_model:
-                response = await self.client.chat.completions.create(
-                    model=self.settings.openai_model,
-                    messages=messages,
-                    max_completion_tokens=self.settings.openai_assessment_max_tokens,
-                    response_format=response_format,
-                    reasoning_effort=cast(
-                        ReasoningEffort,
-                        self.settings.openai_assessment_reasoning_effort,
-                    ),
-                    **langfuse_options(
-                        self.settings,
-                        name="assessment.evaluate-design",
-                        tags=("assessment", "design"),
-                        metadata={
-                            "component_count": len(request.components),
-                            "connection_count": len(request.connections or []),
-                            "has_problem": request.problem is not None,
-                        },
-                    ),
-                )
-            else:
-                response = await self.client.chat.completions.create(
-                    model=self.settings.openai_model,
-                    messages=messages,
-                    max_completion_tokens=self.settings.openai_assessment_max_tokens,
-                    response_format=response_format,
-                    temperature=self.settings.openai_temperature,
-                    **langfuse_options(
-                        self.settings,
-                        name="assessment.evaluate-design",
-                        tags=("assessment", "design"),
-                        metadata={
-                            "component_count": len(request.components),
-                            "connection_count": len(request.connections or []),
-                            "has_problem": request.problem is not None,
-                        },
-                    ),
-                )
 
             # Keep the complete provider payload available during local
             # debugging. This is intentionally disabled outside debug mode
             # because the response contains the submitted design context.
-            if self.settings.debug:
-                raw_response: str = response.model_dump_json(indent=2)
+            if self.settings.debug and response.raw is not None:
+                if hasattr(response.raw, "model_dump_json"):
+                    raw_response = response.raw.model_dump_json(indent=2)
+                else:
+                    raw_response = json.dumps(response.raw, default=str, indent=2)
                 logger.debug(
-                    "Raw OpenAI assessment response:\n%s",
+                    "Raw LLM assessment response:\n%s",
                     raw_response,
                 )
 
-            choice = response.choices[0] if response.choices else None
-            message = choice.message if choice is not None else None
-            content = message.content if message is not None else None
+            content = response.content
             usage = response.usage
-            usage_details = getattr(usage, "completion_tokens_details", None)
-            reasoning_tokens = getattr(usage_details, "reasoning_tokens", None)
-            finish_reason = choice.finish_reason if choice is not None else None
-            refusal_present = bool(getattr(message, "refusal", None))
+            reasoning_tokens = usage.reasoning_tokens
+            finish_reason = response.finish_reason
+            refusal_present = response.refusal_present
 
             logger.info(
                 "AI assessment provider response model=%s finish_reason=%s "
                 "prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s "
                 "content_length=%s refusal_present=%s elapsed_ms=%s",
-                self.settings.openai_model,
+                response.model or self.settings.llm_model,
                 finish_reason,
-                getattr(usage, "prompt_tokens", None),
-                getattr(usage, "completion_tokens", None),
+                usage.prompt_tokens,
+                usage.completion_tokens,
                 reasoning_tokens,
                 len(content or ""),
                 refusal_present,
@@ -276,7 +263,7 @@ class AIAssessorService:
     ) -> InterviewQuestionsResponse:
         """Generate questions for the pre-assessment interview dialog."""
         prompt = get_interview_questions_prompt(request)
-        messages: list[ChatCompletionMessageParam] = [
+        messages: list[dict[str, str]] = [
             {
                 "role": "system",
                 "content": (
@@ -286,43 +273,12 @@ class AIAssessorService:
             },
             {"role": "user", "content": prompt},
         ]
-        response_format: ResponseFormatJSONObject = {"type": "json_object"}
-        is_reasoning_model = self.settings.openai_model.lower().startswith(
-            ("gpt-5", "o1", "o3", "o4")
+        response = await self._generate_json(
+            task="interview.generate-questions",
+            messages=messages,
+            tags=("interview", "questions"),
         )
-
-        if is_reasoning_model:
-            response = await self.client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=messages,
-                max_completion_tokens=self.settings.openai_assessment_max_tokens,
-                response_format=response_format,
-                reasoning_effort=cast(
-                    ReasoningEffort,
-                    self.settings.openai_assessment_reasoning_effort,
-                ),
-                **langfuse_options(
-                    self.settings,
-                    name="interview.generate-questions",
-                    tags=("interview", "questions"),
-                ),
-            )
-        else:
-            response = await self.client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=messages,
-                max_completion_tokens=self.settings.openai_assessment_max_tokens,
-                response_format=response_format,
-                temperature=self.settings.openai_temperature,
-                **langfuse_options(
-                    self.settings,
-                    name="interview.generate-questions",
-                    tags=("interview", "questions"),
-                ),
-            )
-
-        choice = response.choices[0] if response.choices else None
-        content = choice.message.content if choice else None
+        content = response.content
         result = self._parse_json_response(content)
         raw_questions = result.get("questions", [])
         questions = (
@@ -345,7 +301,7 @@ class AIAssessorService:
     ) -> InterviewResponse:
         """Critique one answer while reusing the assessment AI configuration."""
         prompt = get_interview_prompt(request)
-        messages: list[ChatCompletionMessageParam] = [
+        messages: list[dict[str, str]] = [
             {
                 "role": "system",
                 "content": (
@@ -355,43 +311,12 @@ class AIAssessorService:
             },
             {"role": "user", "content": prompt},
         ]
-        response_format: ResponseFormatJSONObject = {"type": "json_object"}
-        is_reasoning_model = self.settings.openai_model.lower().startswith(
-            ("gpt-5", "o1", "o3", "o4")
+        response = await self._generate_json(
+            task="interview.critique-answer",
+            messages=messages,
+            tags=("interview", "critique"),
         )
-
-        if is_reasoning_model:
-            response = await self.client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=messages,
-                max_completion_tokens=self.settings.openai_assessment_max_tokens,
-                response_format=response_format,
-                reasoning_effort=cast(
-                    ReasoningEffort,
-                    self.settings.openai_assessment_reasoning_effort,
-                ),
-                **langfuse_options(
-                    self.settings,
-                    name="interview.critique-answer",
-                    tags=("interview", "critique"),
-                ),
-            )
-        else:
-            response = await self.client.chat.completions.create(
-                model=self.settings.openai_model,
-                messages=messages,
-                max_completion_tokens=self.settings.openai_assessment_max_tokens,
-                response_format=response_format,
-                temperature=self.settings.openai_temperature,
-                **langfuse_options(
-                    self.settings,
-                    name="interview.critique-answer",
-                    tags=("interview", "critique"),
-                ),
-            )
-
-        choice = response.choices[0] if response.choices else None
-        content = choice.message.content if choice else None
+        content = response.content
         result = self._parse_json_response(content)
 
         critique = result.get("critique")
