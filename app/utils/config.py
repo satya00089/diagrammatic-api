@@ -235,6 +235,10 @@ class Settings(BaseSettings):
     google_analytics_property_id: str | None = Field(
         None, validation_alias="GOOGLE_ANALYTICS_PROPERTY_ID"
     )
+    # Optional service-account JSON value for serverless hosts such as Vercel.
+    google_service_account_json: str | None = Field(
+        None, validation_alias="GOOGLE_SERVICE_ACCOUNT_JSON"
+    )
 
     # Redis is the hot aggregation store; S3 receives periodic snapshots.
     redis_uri: str | None = Field(None, validation_alias="REDIS_URI")

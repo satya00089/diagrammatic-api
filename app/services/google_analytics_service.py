@@ -11,6 +11,7 @@ import google.auth
 import google_auth_httplib2
 import httplib2
 from google.auth.exceptions import DefaultCredentialsError
+from google.oauth2 import service_account
 
 from app.utils.config import Settings, get_settings
 
@@ -93,6 +94,26 @@ def _error_report(
     }
 
 
+def _credentials_for_settings(settings: Settings) -> Any:
+    service_account_json = (
+        getattr(settings, "google_service_account_json", None) or ""
+    ).strip()
+    if service_account_json:
+        service_account_info = json.loads(service_account_json)
+        if (
+            not isinstance(service_account_info, dict)
+            or service_account_info.get("type") != "service_account"
+        ):
+            raise ValueError("Expected a service-account JSON object")
+        return service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=[ANALYTICS_READONLY_SCOPE],
+        )
+
+    credentials, _ = google.auth.default(scopes=[ANALYTICS_READONLY_SCOPE])
+    return credentials
+
+
 def get_google_analytics_report(
     days: int, settings: Settings | None = None
 ) -> Dict[str, Any]:
@@ -112,11 +133,23 @@ def get_google_analytics_report(
         )
 
     try:
-        credentials, _ = google.auth.default(scopes=[ANALYTICS_READONLY_SCOPE])
+        credentials = _credentials_for_settings(resolved_settings)
     except DefaultCredentialsError:
         return _error_report(
             "not_configured",
-            "Configure Google Application Default Credentials on the API server.",
+            "Configure GOOGLE_SERVICE_ACCOUNT_JSON or Google Application "
+            "Default Credentials on the API server.",
+            property_id,
+        )
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Google Analytics service-account configuration is invalid (%s)",
+            type(exc).__name__,
+        )
+        return _error_report(
+            "error",
+            "GOOGLE_SERVICE_ACCOUNT_JSON must contain a valid service-account "
+            "JSON key.",
             property_id,
         )
     except Exception as exc:  # Credentials must never be included in the API response.
