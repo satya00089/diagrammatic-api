@@ -146,7 +146,6 @@ class Settings(BaseSettings):
     jwt_access_token_expire_hours: int = Field(
         24, validation_alias="JWT_ACCESS_TOKEN_EXPIRE_HOURS"
     )
-
     # Google OAuth Configuration
     google_client_id: str = Field(..., validation_alias="GOOGLE_CLIENT_ID")
     google_client_secret: str | None = Field(

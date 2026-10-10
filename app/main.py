@@ -32,6 +32,7 @@ from app.routers import (
     learning_paths,
     transcriptions,
     feedback,
+    admin,
     mcp_integration,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware
@@ -175,6 +176,7 @@ app.include_router(sprites.router, tags=["sprites"])
 app.include_router(learning_paths.router, prefix=API_V1_PREFIX, tags=["learning-paths"])
 app.include_router(transcriptions.router, prefix=API_V1_PREFIX, tags=["transcriptions"])
 app.include_router(feedback.router, prefix=API_V1_PREFIX, tags=["feedback"])
+app.include_router(admin.router, prefix=API_V1_PREFIX, tags=["admin"])
 app.include_router(mcp_integration.router, prefix=API_V1_PREFIX)
 
 

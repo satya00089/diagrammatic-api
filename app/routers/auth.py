@@ -28,6 +28,7 @@ from app.models.auth_models import (
     UserPreferences,
 )
 from app.services.auth_service import auth_service
+from app.services.admin_access import is_super_admin_user
 from app.services.dynamodb_service import dynamodb_service
 from app.services.email_service import email_service, EmailDeliveryError
 from app.services.google_auth_handoff import google_auth_handoff_store
@@ -283,6 +284,8 @@ async def login(request: LoginRequest):
             email=user.email,
             name=user.name,
             picture=user.picture,
+            roles=user.roles,
+            isSuperAdmin=is_super_admin_user(user),
             emailVerified=_is_email_verified(user),
             createdAt=user.createdAt,
         ),
@@ -345,6 +348,8 @@ def _authenticate_google_credential(credential: str) -> AuthResponse:
             email=user.email,
             name=user.name,
             picture=user.picture,
+            roles=user.roles,
+            isSuperAdmin=is_super_admin_user(user),
             emailVerified=_is_email_verified(user),
             createdAt=user.createdAt,
         ),
@@ -544,6 +549,8 @@ async def get_me(
         picture=user.picture,
         emailVerified=_is_email_verified(user),
         preferences=getattr(user, "preferences", None),
+        roles=user.roles,
+        isSuperAdmin=is_super_admin_user(user),
         createdAt=user.createdAt,
     )
 
