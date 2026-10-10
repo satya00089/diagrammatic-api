@@ -1,6 +1,6 @@
 """Response models for the super-admin dashboard."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -48,6 +48,22 @@ class AdminOverviewResponse(BaseModel):
     analytics: AdminAnalyticsSummary
     feedback: AdminFeedbackSummary
     recentFeedback: List[AdminFeedbackItem] = Field(default_factory=list)
+
+
+class GoogleAnalyticsChannelGroup(BaseModel):
+    name: str
+    sessions: int = 0
+
+
+class AdminGoogleAnalyticsReport(BaseModel):
+    status: Literal["not_configured", "connected", "error"]
+    propertyId: Optional[str] = None
+    activeUsers: Optional[int] = None
+    newUsers: Optional[int] = None
+    sessions: Optional[int] = None
+    screenPageViews: Optional[int] = None
+    channelGroups: List[GoogleAnalyticsChannelGroup] = Field(default_factory=list)
+    message: Optional[str] = None
 
 
 class AdminAccessUser(BaseModel):

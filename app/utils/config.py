@@ -230,6 +230,12 @@ class Settings(BaseSettings):
         None, validation_alias="ANALYTICS_HMAC_SECRET"
     )
 
+    # Optional read-only GA4 Data API integration. Credentials are resolved by
+    # Google Application Default Credentials on the API server.
+    google_analytics_property_id: str | None = Field(
+        None, validation_alias="GOOGLE_ANALYTICS_PROPERTY_ID"
+    )
+
     # Redis is the hot aggregation store; S3 receives periodic snapshots.
     redis_uri: str | None = Field(None, validation_alias="REDIS_URI")
     analytics_flush_interval_seconds: int = Field(
