@@ -73,6 +73,72 @@ def test_report_maps_ga_metrics_and_channel_groups(monkeypatch) -> None:
     ]
 
 
+def test_report_uses_service_account_json_when_configured(monkeypatch) -> None:
+    responses = [
+        {"rows": [{"metricValues": [{"value": "1"}] * 4}]},
+        {"rows": []},
+    ]
+
+    class FakeHttp:
+        def request(self, *_args, **_kwargs):
+            return SimpleNamespace(status=200), json.dumps(
+                responses.pop(0)
+            ).encode()
+
+    credentials = object()
+    loaded = {}
+
+    def load_service_account(info, scopes):
+        loaded["info"] = info
+        loaded["scopes"] = scopes
+        return credentials
+
+    def fail_if_adc_is_used(**_kwargs):
+        raise AssertionError("ADC should not run when service-account JSON is set")
+
+    monkeypatch.setattr(
+        service.service_account.Credentials,
+        "from_service_account_info",
+        load_service_account,
+    )
+    monkeypatch.setattr(google.auth, "default", fail_if_adc_is_used)
+    monkeypatch.setattr(service, "_authorized_http", lambda _credentials: FakeHttp())
+
+    report = service.get_google_analytics_report(
+        30,
+        SimpleNamespace(
+            google_analytics_property_id="554763049",
+            google_service_account_json=json.dumps(
+                {
+                    "type": "service_account",
+                    "client_email": "ga-reader@example.iam.gserviceaccount.com",
+                    "private_key": "test-only-placeholder",
+                }
+            ),
+        ),
+    )
+
+    assert report["status"] == "connected"
+    assert loaded["info"]["client_email"] == (
+        "ga-reader@example.iam.gserviceaccount.com"
+    )
+    assert loaded["scopes"] == [service.ANALYTICS_READONLY_SCOPE]
+
+
+def test_report_rejects_invalid_service_account_json_without_leaking_it() -> None:
+    secret_value = "not-a-real-private-key"
+    report = service.get_google_analytics_report(
+        30,
+        SimpleNamespace(
+            google_analytics_property_id="554763049",
+            google_service_account_json=secret_value,
+        ),
+    )
+
+    assert report["status"] == "error"
+    assert secret_value not in report["message"]
+
+
 def test_report_does_not_expose_upstream_error_details(monkeypatch) -> None:
     class ForbiddenHttp:
         def request(self, *_args, **_kwargs):
