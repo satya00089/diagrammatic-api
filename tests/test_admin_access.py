@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from botocore.exceptions import ClientError
 
+from app.routers import admin as admin_router
 from app.services import admin_access
 from app.services.dynamodb_service import DynamoDBService
 
@@ -64,3 +65,54 @@ def test_updating_missing_feedback_does_not_create_item() -> None:
     service.feedback_table = MissingFeedbackTable()
 
     assert service.update_feedback_status("missing-id", "resolved") is None
+
+
+def test_admin_feedback_item_includes_and_caches_submitter_profile(monkeypatch) -> None:
+    author = SimpleNamespace(
+        name="Diagramwise Member",
+        email="member@example.com",
+        picture="https://lh3.googleusercontent.com/profile-photo",
+    )
+    lookups = []
+
+    def get_user_by_id(user_id):
+        lookups.append(user_id)
+        return author
+
+    monkeypatch.setattr(admin_router.dynamodb_service, "get_user_by_id", get_user_by_id)
+    cache = {}
+    feedback = {
+        "id": "feedback-id",
+        "createdAt": "2026-10-10T00:00:00+00:00",
+        "source": "global",
+        "category": "other",
+        "userId": "user-id",
+    }
+
+    item = admin_router._feedback_item(feedback, cache)
+    cached_item = admin_router._feedback_item(feedback, cache)
+
+    assert item.authorName == "Diagramwise Member"
+    assert item.authorEmail == "member@example.com"
+    assert item.authorPicture == "https://lh3.googleusercontent.com/profile-photo"
+    assert cached_item.authorEmail == item.authorEmail
+    assert lookups == ["user-id"]
+
+
+def test_admin_feedback_item_does_not_look_up_anonymous_submitter(monkeypatch) -> None:
+    def unexpected_lookup(_user_id):
+        raise AssertionError("anonymous feedback must not trigger a user lookup")
+
+    monkeypatch.setattr(admin_router.dynamodb_service, "get_user_by_id", unexpected_lookup)
+    item = admin_router._feedback_item(
+        {
+            "id": "anonymous-feedback",
+            "createdAt": "2026-10-10T00:00:00+00:00",
+            "source": "global",
+            "category": "other",
+        }
+    )
+
+    assert item.authorName is None
+    assert item.authorEmail is None
+    assert item.authorPicture is None
