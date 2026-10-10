@@ -153,6 +153,8 @@ def validate_architecture(architecture: dict) -> None:
 def make_request(problem: dict, walkthrough: dict, built: dict, spec: dict | None = None) -> dict:
     revision = walkthrough.get("requirementRevision")
     spec = spec or problem.get("requirementSpec")
+    if revision and not spec:
+        raise FixtureError("Walkthrough requirement revision needs a matching requirement spec")
     if spec:
         errors = validate_spec(spec)
         if errors or (revision and revision != spec["revision"]):

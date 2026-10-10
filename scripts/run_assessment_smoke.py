@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from copy import deepcopy
 import json
 from pathlib import Path
 import sys
@@ -19,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.models.request_models import AssessmentRequest
 from app.services.ai_assessor import AIAssessorService
+from scripts.walkthrough_fixtures import build_architecture, make_request
 
 
 class SmokeAssessor(AIAssessorService):
@@ -42,48 +42,23 @@ class SmokeAssessor(AIAssessorService):
             raise
 
 
-ROLE = {"backend-server": "backend", "loadbalancer": "load-balancer", "file-storage": "storage",
-        "object-storage": "storage", "search": "backend", "auth-service": "security", "scheduler": "backend", "tracing": "monitoring",
-        "firewall": "security", "configuration-service": "backend"}
-
-
-def build_request(problem: dict, guide: dict) -> dict:
-    nodes = {}
-    edges = []
-    for step in guide["steps"]:
-        component = step.get("component")
-        if step["type"] == "add_component" and component:
-            properties = deepcopy(component["properties"])
-            properties["componentId"] = component["componentType"]
-            properties["purpose"] = properties.get("purpose", properties.get("description", ""))
-            nodes[component["nodeId"]] = {"id": component["nodeId"],
-                "type": ROLE.get(component["componentType"], component["componentType"]),
-                "label": component["label"], "properties": properties}
-        if step["type"] == "add_connection" and step.get("connection"):
-            edge = step["connection"]
-            if edge["sourceNodeId"] not in nodes or edge["targetNodeId"] not in nodes:
-                raise ValueError(f"Missing prerequisite for {edge['edgeId']}")
-            edges.append({"id": edge["edgeId"], "source": edge["sourceNodeId"], "target": edge["targetNodeId"],
-                "type": edge["connectionType"], "label": edge["label"], "description": edge["description"]})
-        if step.get("componentUpdate"):
-            update = step["componentUpdate"]
-            nodes[update["nodeId"]]["properties"].update(deepcopy(update["properties"]))
-    valid_types = {member.value for member in __import__('app.models.request_models', fromlist=['ComponentType']).ComponentType}
-    for node in nodes.values():
-        if node["type"] not in valid_types:
-            node["type"] = "custom"
-    return {"components": list(nodes.values()), "connections": edges,
-        "problem": {"id": problem["id"], "title": problem["title"], "description": problem["description"],
-            "requirements": "\n".join(problem.get("requirements", [])),
-            "constraints": "\n".join(problem.get("constraints", [])),
-            "difficulty": problem.get("difficulty"), "category": problem.get("category")}}
+def build_request(problem: dict, guide: dict, spec: dict | None = None) -> dict:
+    """Replay only applied actions, using the same fixture path as evaluation."""
+    return make_request(problem, guide, build_architecture(guide), spec)
 
 
 async def run(args) -> None:
     guide = json.loads(args.walkthrough.read_text(encoding="utf-8"))
     problems = json.loads((ROOT / "tests/fixtures/walkthroughs/problems.json").read_text(encoding="utf-8"))
     problem = next(item for item in problems if item["id"] == guide["problem_id"])
-    request = build_request(problem, guide)
+    spec = None
+    if args.manifest:
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        spec = next((row["proposedSpec"] for row in manifest["changes"]
+                     if row["id"] == guide["problem_id"]), None)
+        if spec is None:
+            raise ValueError("Manifest has no requirement spec for this walkthrough")
+    request = build_request(problem, guide, spec)
     if args.negative == "no-permission-enforcement":
         for node in request["components"]:
             props = node["properties"]
@@ -125,6 +100,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repeats", type=int, choices=range(1, 6), default=1)
     parser.add_argument("--negative", choices=["no-permission-enforcement"])
+    parser.add_argument("--manifest", type=Path, help="Explicit local requirements manifest for a versioned guide")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Output already exists; do not overwrite or cherry-pick a recorded run")

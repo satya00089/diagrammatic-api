@@ -106,7 +106,7 @@ and [paginated Scan](https://docs.aws.amazon.com/boto3/latest/reference/services
 ## Public walkthrough evaluation
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\assessment_evaluation.py check --walkthrough-dir data\assessment-reference-candidates\walkthroughs --output docs\requirements-structure-new.json
+.\.venv\Scripts\python.exe scripts\assessment_evaluation.py check --walkthrough-dir data\assessment-reference-candidates\walkthroughs --manifest docs\requirements-catalog-draft.json --output docs\requirements-structure-new.json
 .\.venv\Scripts\python.exe scripts\assessment_evaluation.py prepare --walkthrough-dir data\assessment-reference-candidates\walkthroughs --manifest docs\requirements-catalog-draft.json --output docs\requirements-evaluation-new.json
 .\.venv\Scripts\python.exe scripts\assessment_evaluation.py plan --bundle docs\requirements-assessment-evaluation-bundle.json --output docs\requirements-run-plan.json
 .\.venv\Scripts\python.exe scripts\assessment_evaluation.py evaluate --bundle docs\requirements-assessment-evaluation-bundle.json --results docs\requirements-recorded-results.json --output docs\requirements-evaluation-results.json
@@ -120,6 +120,9 @@ step carrying `componentUpdate`, including decision/scale steps, applies that
 payload. A viewed explanation or decision without an application payload is
 not implemented evidence. Broken endpoints, duplicate IDs, missing protocols,
 invalid property updates and mismatched revisions fail before model calls.
+Candidate guides that declare `requirementRevision` require a matching spec in
+the manifest even for the offline structure check; a revision label alone is
+not a reviewed brief.
 
 Replay with no selected IDs simulates accepting every explicit action. Use
 `build_architecture(guide, applied_step_ids=[...])` for actual accepted actions.

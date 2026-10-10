@@ -10,6 +10,7 @@ import pytest
 from app.models.walkthrough_models import GuidedWalkthrough
 from app.models.request_models import AssessmentRequest
 from app.services.walkthrough_reference import compare_walkthrough_structure, get_fallback_reference_checks
+from scripts.walkthrough_fixtures import build_architecture
 
 CANDIDATES = Path(__file__).resolve().parents[1] / "data/assessment-reference-candidates/walkthroughs"
 
@@ -55,8 +56,23 @@ def test_document_reference_does_not_claim_client_ip_affinity_or_efs():
     assert "deduplicate" in components["guided_collab_server"]["properties"]["reconnectProtocol"]
 
 
+def test_document_candidate_lessons_match_the_applied_design():
+    guide = json.loads((CANDIDATES / "6901ef1b9420d83630aca871.json").read_text(encoding="utf-8"))
+    architecture = build_architecture(guide)["architecture"]
+    components = {component["id"]: component for component in architecture["components"]}
+    stale_steps = [step["id"] for step in guide["steps"] if "ip-hash" in step.get("content", "").lower()]
+
+    assert stale_steps == [], f"Lessons contradict document-ID routing: {stale_steps}"
+    assert components["guided_loadbalancer"]["properties"]["routingKey"] == "document_id"
+    assert "markdown" in components["guided_collab_server"]["properties"]["formats"].lower()
+    assert "new head/version" in components["guided_database"]["properties"]["rollback"]
+
+
 def test_scheduler_backoff_is_an_explicit_persisted_recovery_action():
-    guide = json.loads((CANDIDATES / "6901ef1b9420d83630aca869.json").read_text(encoding="utf-8"))
+    path = CANDIDATES / "6901ef1b9420d83630aca869.json"
+    if not path.exists():
+        pytest.skip("scheduler candidate is a local evaluation artifact")
+    guide = json.loads(path.read_text(encoding="utf-8"))
     components = {step["component"]["nodeId"]: step["component"] for step in guide["steps"] if step.get("component")}
     assert "full-jitter exponential backoff" in components["guided_worker_pool"]["properties"]["retryBackoff"]
     assert "outbox" in components["guided_job_store"]["properties"]["retryState"]
