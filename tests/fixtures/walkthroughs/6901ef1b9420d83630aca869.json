@@ -1,0 +1,783 @@
+{
+  "version": "1.0",
+  "steps": [
+    {
+      "phase": "Phase 1: Goals & API",
+      "id": "6901ef1b9420d83630aca869_step_01",
+      "stepNumber": 1,
+      "type": "explanation",
+      "title": "The core challenge",
+      "content": "Designing a job scheduler requires balancing accurate timing, high scale, and correctness. Key challenges:\n\n- **Timing accuracy**: Jobs must fire at the requested time across timezones, despite clock skew between nodes. Even a few seconds of drift can break SLA-sensitive workloads.\n- **Exactly-once safety**: A worker crash mid-execution must not cause the job to silently drop or run twice. Lease-based claiming and idempotent handlers are the primary defence.\n- **Scale**: A production scheduler must handle millions of scheduled entries without scanning the full table on every poll. Efficient indexing (e.g., ZSET by timestamp) is critical.\n- **Recurring schedules**: Cron expressions must be evaluated correctly across DST transitions and leap days. Pre-expansion of future occurrences is avoided to keep queue size bounded.\n- **Retries and observability**: Each job must carry attempt count, error history, and correlation IDs to enable debugging and SLO reporting."
+    },
+    {
+      "phase": "Phase 1: Goals & API",
+      "id": "6901ef1b9420d83630aca869_step_02",
+      "stepNumber": 2,
+      "type": "explanation",
+      "title": "API surface",
+      "content": "Define a minimal public API for job lifecycle:\n\n- `POST /jobs` — create job (one-time or recurring). Body includes `payload`, `schedule_at` or `cron`, `timezone`, `max_attempts`, `priority`, and `idempotency_key`.\n- `GET /jobs/{id}` — inspect current status, attempt history, next_run_at, and last error.\n- `PATCH /jobs/{id}` — update cron expression, reschedule a one-time job, or cancel it.\n- `DELETE /jobs/{id}` — permanently remove job and purge from the scheduling primitive.\n- `GET /jobs?next_run_before=<epoch>` — admin/monitoring query for upcoming jobs within a time window.\n\n**Idempotency**: require clients to send an `idempotency_key` on `POST`. The API returns the existing job if the key was already processed, preventing duplicates on client retries.\n\n**Auth**: all endpoints require a valid OAuth 2.0 bearer token. Role-based access controls who may schedule or cancel jobs versus who may only read status."
+    },
+    {
+      "phase": "Phase 1: Goals & API",
+      "component": {
+        "highlightReason": "Front door for job creation, validation and idempotency handling.",
+        "componentType": "api-gateway",
+        "label": "Job API",
+        "position": {
+          "x": 80,
+          "y": 200
+        },
+        "nodeId": "guided_job_api",
+        "properties": {
+          "throttling": true,
+          "rateLimiting": true,
+          "tlsTermination": true,
+          "description": "<p>HTTP REST API that acts as the single entry point for all job lifecycle operations. Enforces TLS 1.2+ for all connections. Validates every inbound request against the OAuth 2.0 bearer token from the Auth Service before touching any business logic. Applies per-client rate limiting (1 000 req/s default) and request throttling to prevent abuse and protect downstream systems. Performs strict JSON schema validation on every payload. Deduplicates submissions using an idempotency_key index (UNIQUE constraint) so client retries are safe. Writes canonical job metadata to the Job Store transactionally and inserts next_run_at into the Redis ZSET for scheduling. All request and response payloads are logged (excluding raw secrets) to the audit trail.</p>",
+          "componentName": "Job API",
+          "inputValidation": true,
+          "requestsPerSecond": 1000,
+          "deduplication": true,
+          "authentication": "OAuth 2.0"
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_03",
+      "stepNumber": 3,
+      "type": "add_component",
+      "title": "Add the Job API",
+      "content": "## Job API — entry point\n\nClients submit jobs via a simple REST API. The Job API validates payloads, enforces idempotency, and persists canonical metadata. For one-time jobs it computes `next_run_at` and writes to the scheduler primitive; for recurring jobs it stores the cron expression and initial `next_run_at`."
+    },
+    {
+      "phase": "Phase 2: Persistence & Scheduler Engine",
+      "component": {
+        "highlightReason": "Durable source of truth for job metadata, status, and history.",
+        "componentType": "database",
+        "label": "Job Store (Postgres)",
+        "position": {
+          "x": 300,
+          "y": 200
+        },
+        "nodeId": "guided_job_store",
+        "properties": {
+          "replication": 2,
+          "pitr": true,
+          "wal": true,
+          "multiAZ": true,
+          "auditLog": true,
+          "rbac": true,
+          "description": "<p>Durable ACID-compliant relational store for all canonical job state: schedule, status, attempt count, lease metadata, and audit history. All data at rest is encrypted with AES-256 (pgcrypto column-level encryption). WAL-based replication feeds one or more read replicas so job status queries and audit lookups never contend with the write-heavy claiming path. PITR and daily automated backups ensure zero-data-loss recovery with an RPO of minutes. Row-level RBAC restricts which service accounts may claim, update, or read job rows, and every DDL change is captured in the audit log. Connection pooling (e.g., PgBouncer) caps concurrent connections and prevents connection-storm failures. The primary handles all writes (claims, completions, status transitions); read replicas serve the high-fan-out status query workload.</p>",
+          "workload": "OLTP",
+          "connectionPooling": true,
+          "type": "Relational",
+          "encryption": true,
+          "engine": "Postgres",
+          "componentName": "Job Store (Postgres)",
+          "storageGB": 200,
+          "backups": true
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_04",
+      "stepNumber": 4,
+      "type": "add_component",
+      "title": "Add the Job Store (Postgres)",
+      "content": "## Job Store — durable metadata\n\nThe Job Store is the canonical state for jobs: schedule, attempts, status and owner. Use transactional updates to mark claims and persist history for observability."
+    },
+    {
+      "phase": "Phase 2: Persistence & Scheduler Engine",
+      "connection": {
+        "description": "API writes canonical job metadata and status updates to the Job Store (Postgres) using transactional updates.",
+        "edgeId": "edge_api_jobstore",
+        "label": "API → Job Store",
+        "targetNodeId": "guided_job_store",
+        "connectionType": "database-connection",
+        "sourceNodeId": "guided_job_api"
+      },
+      "id": "6901ef1b9420d83630aca869_step_05",
+      "stepNumber": 5,
+      "type": "add_connection",
+      "title": "Job API → Job Store (persist metadata)",
+      "content": "Decide on allowed cron granularity (minute-level typical). Always store schedule times in UTC and include a `timezone` field for human-facing display and correct cron expansion. Require NTP-synced servers and prefer monotonic timers for measuring durations."
+    },
+    {
+      "phase": "Phase 2: Persistence & Scheduler Engine",
+      "component": {
+        "highlightReason": "Fast runtime primitive for due timestamps using a Redis ZSET.",
+        "componentType": "cache",
+        "label": "Runtime Scheduler (Redis)",
+        "position": {
+          "x": 500,
+          "y": 200
+        },
+        "nodeId": "guided_redis",
+        "properties": {
+          "replication": true,
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>In-memory scheduling primitive (Redis ZSET) stores job ids scored by epoch seconds. The scheduler atomically claims due members and moves them to ready queues. Redis provides low-latency reads for high-rate scans and supports clustering for scale.</p>",
+          "cacheStrategy": "ZSET-scoring",
+          "persistence": true,
+          "maxMemoryGB": 64,
+          "componentName": "Runtime Scheduler (Redis)",
+          "ttl": 0,
+          "clusterMode": true
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_06",
+      "stepNumber": 6,
+      "type": "add_component",
+      "title": "Add the Runtime Scheduler (Redis)",
+      "content": "## Runtime Scheduler — Redis ZSET\n\nUse Redis ZSET for due-time indexing in the MVP. Claiming should be atomic to avoid duplicates, and Redis clusters can be sharded by time-bucket or tenant to scale."
+    },
+    {
+      "phase": "Phase 2: Persistence & Scheduler Engine",
+      "connection": {
+        "description": "API inserts `next_run_at` entries into the runtime scheduling primitive (Redis ZSET) for one-time and recurring jobs.",
+        "edgeId": "edge_api_redis",
+        "label": "API → Redis (schedule)",
+        "targetNodeId": "guided_redis",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_job_api"
+      },
+      "id": "6901ef1b9420d83630aca869_step_07",
+      "stepNumber": 7,
+      "type": "add_connection",
+      "title": "Job API → Runtime Scheduler (Redis)",
+      "content": "Require callers to provide an `idempotency_key` for client retries. Enforce optional uniqueness constraints (e.g., dedupe identical jobs within a timeframe) via DB unique index or application-level checks. Document expected idempotent behavior for handlers."
+    },
+    {
+      "phase": "Phase 2: Persistence & Scheduler Engine",
+      "id": "6901ef1b9420d83630aca869_step_08",
+      "stepNumber": 8,
+      "type": "explanation",
+      "title": "Recurring jobs — expansion strategy",
+      "content": "For recurring jobs, compute the next run time when the job is created and after each successful run. Store `next_run_at` in the job row and only insert that single timestamp into the scheduled ZSET.\n\n**On completion**: compute the new `next_run_at` using the cron expression and the *scheduled* time (not wall-clock) to avoid drift. Write it transactionally with the completion status so it cannot be lost.\n\n**DST handling**: always evaluate cron expressions against the stored `timezone` field. Use a battle-tested cron library (e.g., `croniter`, `node-cron`) that handles DST transitions and leap days. Never compute next-run in wall-clock UTC without converting back to the job's timezone first.\n\n**Horizon limit**: avoid pre-expanding schedules beyond one occurrence into the ZSET. Long-horizon pre-expansion bloats memory and complicates cancellation, because all future entries must be removed when a job is deleted or paused."
+    },
+    {
+      "phase": "Phase 2: Persistence & Scheduler Engine",
+      "id": "6901ef1b9420d83630aca869_step_09",
+      "stepNumber": 9,
+      "type": "explanation",
+      "title": "Accurate timing and clock issues",
+      "content": "Mitigate timing issues by:\n\n- **NTP synchronisation**: run `chrony` or `ntpd` on every scheduler and worker node. Enforce a maximum clock skew alert threshold (e.g., > 500 ms triggers an alert) and treat excessive skew as a degraded-mode signal.\n- **UTC storage**: persist all timestamps as UTC epoch seconds. Keep a separate `timezone` string for human-facing display and cron evaluation only.\n- **Poll interval and jitter**: poll the ZSET every 500 ms–1 s and claim jobs due within `now + jitter_window` (e.g., 2 s). This tolerates minor clock skew while bounding worst-case lateness.\n- **Monotonic timers for durations**: use monotonic clocks when measuring execution duration and lease remaining time to avoid wall-clock jumps (e.g., NTP step adjustments) causing spurious lease expiries.\n- **Millisecond accuracy**: if sub-second precision is a hard requirement, standard polling schedulers are insufficient. Consider a time-wheel data structure or a purpose-built real-time scheduler, and document this as an explicit system constraint."
+    },
+    {
+      "phase": "Phase 2: Persistence & Scheduler Engine",
+      "id": "6901ef1b9420d83630aca869_step_10",
+      "stepNumber": 10,
+      "type": "explanation",
+      "title": "Leases and long-running jobs",
+      "content": "When a worker claims a job, grant a lease with an expiry (`lease_expires_at`). Workers must heartbeat — a lightweight DB or Redis write — before the lease expires to retain ownership.\n\n**Renewal**: workers send a heartbeat every `lease_ttl / 3` seconds. The scheduler scans for expired leases on each poll cycle and re-queues stale jobs, resetting status from `running` to `scheduled`.\n\n**Re-queue safety**: before re-queuing, compare the current `lease_expires_at` with now. Only re-queue if the lease is truly expired. Write a new `lease_id` (UUID) on re-queue; the original worker's subsequent writes are rejected when they present the old `lease_id`, preventing split-brain execution.\n\n**Long-running jobs**: if execution time routinely exceeds a reasonable lease TTL (e.g., > 10 min), prefer breaking work into smaller checkpointed tasks, or expose an explicit lease-extension endpoint that operators can call. Document the maximum supported execution duration in the API contract."
+    },
+    {
+      "phase": "Phase 3: Dispatcher & Workers",
+      "component": {
+        "highlightReason": "Scans due timestamps, claims jobs atomically, and publishes ready messages.",
+        "componentType": "scheduler",
+        "label": "Scheduler Service",
+        "position": {
+          "x": 500,
+          "y": 320
+        },
+        "nodeId": "guided_scheduler",
+        "properties": {
+          "cron": "supports cron expressions",
+          "description": "<p>Distributed scheduler that scans the runtime primitive for due jobs, claims them atomically, and publishes ready job messages to the Ready Queue. Responsible for computing next_run_at for recurring jobs and coordinating lease semantics for worker safety.</p>",
+          "retries": 5,
+          "componentName": "Scheduler Service",
+          "type": "distributed"
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_11",
+      "stepNumber": 11,
+      "type": "add_component",
+      "title": "Add the Scheduler Service",
+      "content": "## Scheduler Service — claim & publish\n\nThe Scheduler Service polls the runtime primitive, claims due jobs atomically, and publishes ready job messages for workers to consume. It also computes the next run for recurring jobs."
+    },
+    {
+      "phase": "Phase 3: Dispatcher & Workers",
+      "connection": {
+        "description": "Atomic claiming flow: scheduler reads due members from Redis ZSET and claims them for execution.",
+        "edgeId": "edge_redis_scheduler",
+        "label": "Scheduled → Scheduler",
+        "targetNodeId": "guided_scheduler",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_redis"
+      },
+      "id": "6901ef1b9420d83630aca869_step_12",
+      "stepNumber": 12,
+      "type": "add_connection",
+      "title": "Connect Redis → Scheduler",
+      "content": "## Atomic dequeue — Redis → Scheduler\n\nMove due job ids atomically from the ZSET into the scheduler's processing path using a Lua script that returns claimed ids and removes them from the set."
+    },
+    {
+      "phase": "Phase 3: Dispatcher & Workers",
+      "connection": {
+        "description": "Scheduler performs transactional claims and updates job status in Postgres to avoid races.",
+        "edgeId": "edge_scheduler_jobstore",
+        "label": "Claim & Persist",
+        "targetNodeId": "guided_job_store",
+        "connectionType": "database-connection",
+        "sourceNodeId": "guided_scheduler"
+      },
+      "id": "6901ef1b9420d83630aca869_step_13",
+      "stepNumber": 13,
+      "type": "add_connection",
+      "title": "Scheduler → Job Store (claiming)",
+      "content": "## Safe claims — Scheduler claims via DB transaction\n\nWhen claiming a job, the Scheduler performs a transactional update that transitions status from `scheduled` to `running` to prevent multiple workers from executing the same job."
+    },
+    {
+      "phase": "Phase 3: Dispatcher & Workers",
+      "id": "6901ef1b9420d83630aca869_step_14",
+      "stepNumber": 14,
+      "type": "explanation",
+      "title": "Idempotent handlers and exactly-once goals",
+      "content": "Aim for **at-least-once delivery** with idempotent handlers as the practical default. Every handler should be safe to run twice with the same input without producing double side-effects.\n\n**Handler idempotency patterns**:\n- Use the `job_id` + `attempt_number` as a deduplication key in downstream systems (e.g., payment processor, notification service).\n- Write to an idempotency table in a transaction: `INSERT ... ON CONFLICT DO NOTHING`. If the row already exists, the handler returns success without re-executing the business logic.\n- For external API calls, pass the `job_id` as the `Idempotency-Key` header if the downstream API supports it (Stripe, etc.).\n\n**Exactly-once**: achievable only with two-phase commit across the job store and the side-effect target, which is expensive and fragile. Reserve it for financial or inventory operations where double-execution causes real harm. For all other use cases, document the at-least-once contract and require idempotent handlers instead."
+    },
+    {
+      "phase": "Phase 3: Dispatcher & Workers",
+      "component": {
+        "highlightReason": "Workers execute job payloads and report success/failure.",
+        "componentType": "backend-server",
+        "label": "Worker Pool",
+        "position": {
+          "x": 700,
+          "y": 320
+        },
+        "nodeId": "guided_worker_pool",
+        "properties": {
+          "description": "<p>Stateless workers that claim ready jobs, execute handlers, and report results. Separate pools for short/long-running job types, with health checks, lease renewals, and idempotency at the handler level to avoid duplicated side effects.</p>",
+          "componentName": "Worker Pool",
+          "instances": 10,
+          "caching": false,
+          "retry": true,
+          "architecture": "Microservices"
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_15",
+      "stepNumber": 15,
+      "type": "add_component",
+      "title": "Add the Worker Pool",
+      "content": "## Worker Pool — execute jobs\n\nWorkers consume ready messages, claim the job, run the handler and update the Job Store. Use pools tuned for job characteristics to avoid starvation and long-tail variance."
+    },
+    {
+      "phase": "Phase 3: Dispatcher & Workers",
+      "id": "6901ef1b9420d83630aca869_step_16",
+      "stepNumber": 16,
+      "type": "explanation",
+      "title": "Tracing, logs and job history",
+      "content": "Record structured events for every job state transition: `scheduled → claimed → started → finished | failed | retried | moved-to-dlq`. Each event should include:\n\n- `job_id`, `attempt_number`, `worker_id`, `correlation_id` (linked to the originating API request)\n- `scheduled_at`, `claimed_at`, `started_at`, `finished_at` — all as UTC epoch ms\n- `duration_ms`, `error_class`, `error_message` (truncated to 2 KB)\n\n**Retention**: keep the last N attempts (e.g., 10) inline in the job row for quick inspection. Write full event streams to a long-term log store (e.g., CloudWatch Logs, Loki, Elasticsearch) with a 30–90 day retention policy.\n\n**Distributed tracing**: propagate `trace_id` and `span_id` from the originating `POST /jobs` request through to the worker execution. This lets engineers correlate a failed job back to the upstream service call that triggered it — invaluable for debugging cascading failures in microservice pipelines."
+    },
+    {
+      "phase": "Phase 4: Scaling & Performance",
+      "id": "6901ef1b9420d83630aca869_step_17",
+      "stepNumber": 17,
+      "type": "explanation",
+      "title": "Sharding and partitioning strategies",
+      "content": "To scale to millions of jobs, partition scheduled work across independent shards so multiple scheduler instances can scan in parallel without contention.\n\n**Hash-by-tenant**: assign each tenant (or job namespace) to a shard using consistent hashing. This isolates noisy tenants and makes rebalancing predictable when shards are added.\n\n**Hash-by-job-id**: distribute jobs uniformly across shards. Simpler to implement, but offers no tenant-level isolation. A single high-volume tenant can still saturate a shard.\n\n**Time-bucketing**: divide the timeline into minute-or-hour-sized buckets and assign buckets to scheduler workers. Works well when job density is predictable. Less suited to very bursty workloads where one minute has 10× normal volume.\n\n**Redis cluster**: map shard keys to Redis hash slots. Each Scheduler Service instance owns a subset of slots, so scans are parallel and node-local. Add shards by resharding (Redis Cluster) or by splitting namespace prefixes.\n\n**Key insight**: whatever strategy you choose, the sharding key must be stable for the job's lifetime so that the job is always found by the same scheduler instance."
+    },
+    {
+      "phase": "Phase 4: Scaling & Performance",
+      "component": {
+        "highlightReason": "Decouples scheduler from workers; durable ready queue with partitioning.",
+        "componentType": "message-broker",
+        "label": "Ready Queue (Kafka)",
+        "position": {
+          "x": 700,
+          "y": 200
+        },
+        "nodeId": "guided_kafka",
+        "properties": {
+          "partitions": 24,
+          "replication": 3,
+          "description": "<p>Durable message bus for ready-job events. Partition by shard or tenant so workers can consume in-order per shard. Kafka-style topics allow replay, audit, and decoupling of the real-time scheduling path from persistence.</p>",
+          "durable": true,
+          "componentName": "Ready Queue (Kafka)",
+          "retention": 168
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_18",
+      "stepNumber": 18,
+      "type": "add_component",
+      "title": "Add the Ready Queue (Kafka)",
+      "content": "## Ready Queue — decouple scheduler & workers\n\nPublish ready-job messages to a partitioned message bus so worker groups can scale independently and replays are possible for debugging and recovery."
+    },
+    {
+      "phase": "Phase 4: Scaling & Performance",
+      "connection": {
+        "description": "Scheduler publishes ready-job messages to the Ready Queue topic for workers to consume.",
+        "edgeId": "edge_scheduler_kafka",
+        "label": "Publish Ready Jobs",
+        "targetNodeId": "guided_kafka",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_scheduler"
+      },
+      "id": "6901ef1b9420d83630aca869_step_19",
+      "stepNumber": 19,
+      "type": "add_connection",
+      "title": "Scheduler → Ready Queue (publish)",
+      "content": "## Publish ready jobs to the Ready Queue\n\nThe Scheduler publishes a compact ready message (job id, payload location, attempts) to the partitioned Ready Queue to be processed by worker groups."
+    },
+    {
+      "phase": "Phase 4: Scaling & Performance",
+      "connection": {
+        "description": "Worker Pool consumers subscribe to Ready Queue partitions to receive due job messages and execute them.",
+        "edgeId": "edge_kafka_workers",
+        "label": "Consume Ready Jobs",
+        "targetNodeId": "guided_worker_pool",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_kafka"
+      },
+      "id": "6901ef1b9420d83630aca869_step_20",
+      "stepNumber": 20,
+      "type": "add_connection",
+      "title": "Ready Queue → Worker Pool (consume jobs)",
+      "content": "## Workers consume from the Ready Queue\n\nWorker Pool instances subscribe to the Ready Queue (Kafka) partitions and poll for ready-job messages. Each worker atomically claims the job, executes the handler, and reports the result back to the Job Store. Partition assignment ensures each job is processed by exactly one worker group at a time."
+    },
+    {
+      "phase": "Phase 4: Scaling & Performance",
+      "connection": {
+        "description": "Workers write job completion status (succeeded or failed) and updated attempt counts back to the Job Store after execution.",
+        "edgeId": "edge_workers_jobstore",
+        "label": "Report Completion",
+        "targetNodeId": "guided_job_store",
+        "connectionType": "database-connection",
+        "sourceNodeId": "guided_worker_pool"
+      },
+      "id": "6901ef1b9420d83630aca869_step_21",
+      "stepNumber": 21,
+      "type": "add_connection",
+      "title": "Worker Pool → Job Store (completion update)",
+      "content": "## Workers update Job Store on completion\n\nAfter executing a job handler, workers perform a transactional update to the Job Store: mark status as `completed` or `failed`, increment attempt count, record finish timestamp, and for recurring jobs trigger `next_run_at` computation. This closes the execution loop and provides an auditable history for every job run."
+    },
+    {
+      "phase": "Phase 4: Scaling & Performance",
+      "id": "6901ef1b9420d83630aca869_step_22",
+      "stepNumber": 22,
+      "type": "explanation",
+      "title": "Priority handling at scale",
+      "content": "Implement priority through one of two approaches, each with distinct trade-offs:\n\n**Multiple queues per priority tier** (recommended): maintain separate Kafka topics or Redis ZSETs for `high`, `normal`, and `low` priority. Worker pools poll high-priority queues first. This gives strict ordering and is easy to reason about operationally.\n\n**Score encoding**: adjust the Redis ZSET score as `score = due_epoch_seconds - priority_offset` (e.g., offset = 0 / 60 / 300 for high / normal / low). Due high-priority jobs always sort before normal ones. Simpler to implement but harder to monitor independently per tier.\n\n**Starvation prevention**: regardless of approach, ensure low-priority work eventually executes. Reserve a minimum worker capacity percentage (e.g., 10%) exclusively for low-priority jobs, or implement aging: promote a job's effective priority after it has been waiting beyond a configurable threshold (e.g., 15 min)."
+    },
+    {
+      "phase": "Phase 4: Scaling & Performance",
+      "id": "6901ef1b9420d83630aca869_step_23",
+      "stepNumber": 23,
+      "type": "explanation",
+      "title": "Autoscaling workers & backpressure",
+      "content": "Autoscale worker pools using observable signals rather than static instance counts:\n\n**Scale-out triggers** (any one sufficient):\n- Kafka consumer lag on any partition exceeds a threshold (e.g., > 500 unacked messages).\n- Ready Queue depth grows beyond a high-water mark for > 60 s.\n- Active lease count approaches the per-shard concurrency ceiling.\n\n**Scale-in**: wait for active leases to drain below a low-water mark for > 2 min before terminating instances. Never kill workers with an active lease — drain the instance first.\n\n**Backpressure handling**: when the queue is saturated, pause polling low-priority topics first. Raise an alert at 80% capacity so operators can intervene before the system becomes fully overloaded. Increase retry backoff windows to reduce re-processing load on already-stressed workers.\n\n**Graceful degradation**: separate worker pools per job type (e.g., fast/slow lanes) prevent long-running jobs from starving short ones. Tune concurrency independently per pool based on observed p95 execution time."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "id": "6901ef1b9420d83630aca869_step_24",
+      "stepNumber": 24,
+      "type": "explanation",
+      "title": "Failure modes & recovery",
+      "content": "Consider and explicitly design for these common failure scenarios:\n\n**Worker crash mid-execution**: the lease TTL expires and the Scheduler re-queues the job. The replacement worker claims it with a new `lease_id`. The original worker's late writes are rejected (stale `lease_id` check), preventing a completed side-effect from being re-applied.\n\n**Scheduler crash**: with sharded responsibilities, remaining live instances continue scanning their own shards unaffected. For single-shard designs use a leader election primitive (e.g., Redis `SET NX` with TTL, etcd lease) so a standby Scheduler promotes itself within seconds.\n\n**Redis failure**: fall back to a Postgres-backed pending queue by querying `WHERE status = 'scheduled' AND next_run_at <= now()`. This is slower but keeps the system operational. Write automated tests that verify this fallback path.\n\n**Network partition**: prefer eventual consistency — jobs may execute slightly late, but never silently drop. Provide a manual reconciliation endpoint (`POST /admin/reconcile`) that scans Postgres for stuck `running` jobs whose lease has expired and re-queues them."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "id": "6901ef1b9420d83630aca869_step_25",
+      "stepNumber": 25,
+      "type": "explanation",
+      "title": "Avoiding duplicate execution",
+      "content": "Duplicate execution is the most dangerous correctness failure in a job scheduler. Defence in depth across three layers:\n\n**Layer 1 — Transactional claiming**: the claim UPDATE is `WHERE id = ? AND status = 'scheduled' AND lease_expires_at < now()`. Only one worker wins the CAS (compare-and-swap). All others see 0 rows updated and back off.\n\n**Layer 2 — Lease ID verification**: on every state-change write (heartbeat, completion, failure), workers include their `lease_id`. The DB rejects writes where `lease_id` does not match the current row value — this is the guard against a slow original worker completing after a re-queue.\n\n**Layer 3 — Handler idempotency**: handlers check a durable deduplication store (e.g., a `completed_executions` table keyed on `job_id + attempt_number`) before applying side effects. If the key exists, the handler returns success immediately without re-executing. This is the last line of defence against any gaps in layers 1 or 2."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "component": {
+        "highlightReason": "Store jobs that exceeded retry limits for human inspection.",
+        "componentType": "queue",
+        "label": "Dead Letter Queue",
+        "position": {
+          "x": 900,
+          "y": 320
+        },
+        "nodeId": "guided_dlq",
+        "properties": {
+          "maxSizeGB": 10,
+          "deadLetterQueue": true,
+          "encryption": true,
+          "description": "<p>Durable queue for failed jobs that need manual inspection. Operators can view payloads, logs, and error reasons, then fix and requeue items. The DLQ prevents noisy failures from blocking normal processing.</p>",
+          "componentName": "Dead Letter Queue (DLQ)",
+          "type": "dead-letter",
+          "visibilityTimeout": 3600
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_26",
+      "stepNumber": 26,
+      "type": "add_component",
+      "title": "Add the Dead Letter Queue (DLQ)",
+      "content": "## Dead Letter Queue — human-in-the-loop\n\nJobs that exhaust retries land in DLQ for operator inspection and remedial action."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "connection": {
+        "description": "When a job exceeds max attempts, workers move it to the Dead Letter Queue for manual inspection.",
+        "edgeId": "edge_workers_dlq",
+        "label": "Worker → DLQ",
+        "targetNodeId": "guided_dlq",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_worker_pool"
+      },
+      "id": "6901ef1b9420d83630aca869_step_27",
+      "stepNumber": 27,
+      "type": "add_connection",
+      "title": "Worker → DLQ (failed jobs)",
+      "content": "## Retries and DLQ — worker failure path\n\nOn repeated failures workers should push to a DLQ after max retries. Provide tooling to inspect, fix, and optionally requeue DLQ items."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "id": "6901ef1b9420d83630aca869_step_28",
+      "stepNumber": 28,
+      "type": "explanation",
+      "title": "Observability and SLOs",
+      "content": "Key metrics to emit from every component:\n\n- `jobs.scheduled_per_minute` — rate of new jobs entering the system\n- `jobs.executed_per_minute` — throughput of the worker pool\n- `job.execution_latency_ms` histogram at p50/p95/p99 — time from `next_run_at` to actual execution start\n- `job.failure_rate` and `jobs.dlq_rate` — error signal and last-resort queue growth\n- `queue_depth` (Ready Queue length) and `consumer_lag` (Kafka lag per partition)\n- `active_leases` and `expired_leases_requeued` — lease health signal\n\n**SLO example**: p95 execution latency ≤ 5 s measured over a 5-minute rolling window.\n\n**Alerting rules**:\n- `consumer_lag > 500` for > 2 min → PagerDuty P2\n- `dlq_rate > 0.1%` over 5 min → PagerDuty P2\n- `job.execution_latency_ms p95 > 10 s` → PagerDuty P1\n\nUse distributed tracing to correlate job execution `trace_id` with the upstream API request that scheduled the job, enabling root-cause analysis across service boundaries."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "id": "6901ef1b9420d83630aca869_step_29",
+      "stepNumber": 29,
+      "type": "explanation",
+      "title": "Security and secrets",
+      "content": "Job payloads often carry sensitive data (API keys, user PII, financial references). Apply defence-in-depth:\n\n**Secret management**: never embed raw secrets in job payloads. Store secrets in a dedicated secrets manager (AWS Secrets Manager, HashiCorp Vault) and put only a secret reference ID in the payload. Workers resolve the reference at execution time with a short-lived IAM role or Vault token scoped to the specific secret.\n\n**Encryption at rest**: encrypt the `payload` column in Postgres using AES-256 (pgcrypto or column-level encryption). Rotate encryption keys annually using key versioning so existing rows can be re-encrypted without downtime.\n\n**RBAC**: define at minimum three roles — `job:write` (can create/update/cancel jobs), `job:read` (can inspect status), and `job:admin` (can requeue DLQ, run reconciliation). Enforce these in the Auth Service and log every privileged action to an immutable audit trail.\n\n**Network security**: restrict Job API and Worker Pool egress/ingress to a private VPC. Use mutual TLS (mTLS) between internal services. Rotate TLS certificates automatically via cert-manager or ACM."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "component": {
+        "highlightReason": "Centralises OAuth 2.0 token issuance and RBAC enforcement for the Job API.",
+        "componentType": "auth-service",
+        "label": "Auth Service",
+        "position": {
+          "x": 80,
+          "y": 60
+        },
+        "nodeId": "guided_auth_service",
+        "properties": {
+          "description": "<p>Centralised authentication and authorisation service that issues and validates OAuth 2.0 bearer tokens for all Job API requests. Enforces RBAC policies controlling which principals may create, update, cancel, or inspect jobs. Integrates with the Job API via a token-validation middleware so every endpoint is protected against unauthorised access. Short-lived tokens (TTL 60 min) limit blast radius of credential compromise.</p>",
+          "mfa": false,
+          "sessions": "redis",
+          "componentName": "Auth Service",
+          "oauth": true,
+          "tokenTTL": 60
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_30",
+      "stepNumber": 30,
+      "type": "add_component",
+      "title": "Add the Auth Service",
+      "content": "## Auth Service — authentication & authorisation\n\nAdd a dedicated Auth Service that issues OAuth 2.0 tokens and validates them on every Job API request. RBAC rules restrict which principals can schedule, cancel, or view jobs. This eliminates the security gap identified in the assessment and prevents unauthorised access to the scheduling pipeline."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "connection": {
+        "description": "The Job API delegates bearer-token validation to the Auth Service on every inbound request; requests with missing or invalid tokens are rejected before any job processing begins.",
+        "edgeId": "edge_auth_jobapi",
+        "label": "Validate Token",
+        "targetNodeId": "guided_job_api",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_auth_service"
+      },
+      "id": "6901ef1b9420d83630aca869_step_31",
+      "stepNumber": 31,
+      "type": "add_connection",
+      "title": "Auth Service → Job API (token validation)",
+      "content": "Every request to the Job API is verified against the Auth Service before processing. The API rejects requests with missing or invalid tokens (401) and enforces role-based access (403): only authorised principals can create, update, or delete jobs."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "component": {
+        "highlightReason": "Collects metrics and provides alerting and dashboards across all scheduler components.",
+        "componentType": "monitoring",
+        "label": "Monitoring (Prometheus + Grafana)",
+        "position": {
+          "x": 1100,
+          "y": 200
+        },
+        "nodeId": "guided_monitoring",
+        "properties": {
+          "alerts": true,
+          "description": "<p>Centralised observability stack using Prometheus for metrics scraping and Grafana for dashboards. Tracks key signals across all components: job execution latency (p50/p95/p99), jobs scheduled and executed per minute, worker error and retry rates, Kafka consumer lag, queue depth, and DLQ growth rate. Alert rules fire on SLO breaches (e.g., p95 execution latency > 5 s, DLQ rate > 0.1%, consumer lag spike). Logs from all services are aggregated here for correlation.</p>",
+          "stack": "Prometheus + Grafana",
+          "componentName": "Monitoring (Prometheus + Grafana)",
+          "metrics": true,
+          "retention": 30
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_32",
+      "stepNumber": 32,
+      "type": "add_component",
+      "title": "Add the Monitoring Service",
+      "content": "## Monitoring — end-to-end observability\n\nAdd a Prometheus + Grafana stack to collect and visualise metrics from every component. Key signals:\n\n- `jobs.scheduled_per_minute` and `jobs.executed_per_minute`\n- Job execution latency p50/p95/p99 (SLO: p95 < 5 s)\n- Worker error rate and retry counts\n- Queue depth, Kafka consumer lag, DLQ size\n\nConfigured alert rules fire on SLO breaches to enable fast incident response."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "connection": {
+        "description": "Worker Pool pushes job execution metrics — latency, success/failure counts, retry counts, and DLQ events — to the Monitoring stack for dashboards and SLO alerting.",
+        "edgeId": "edge_workers_monitoring",
+        "label": "Emit Metrics",
+        "targetNodeId": "guided_monitoring",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_worker_pool"
+      },
+      "id": "6901ef1b9420d83630aca869_step_33",
+      "stepNumber": 33,
+      "type": "add_connection",
+      "title": "Worker Pool → Monitoring (emit metrics)",
+      "content": "## Workers emit execution metrics to Monitoring\n\nWorkers push metrics on every job run: execution latency, success/failure, attempt count, and DLQ events. The Scheduler Service also emits claim-rate and queue-depth metrics. Grafana dashboards and alert rules are built on these signals to maintain full visibility into system health and SLO compliance."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "component": {
+        "highlightReason": "Reduces read pressure on Postgres by caching hot job status lookups.",
+        "componentType": "cache",
+        "label": "Result Cache (Redis)",
+        "position": {
+          "x": 300,
+          "y": 60
+        },
+        "nodeId": "guided_result_cache",
+        "properties": {
+          "replication": true,
+          "eviction": "LRU",
+          "encryption": true,
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>Read-through cache for frequently accessed job status and result data. Reduces read pressure on the Job Store (Postgres) by serving GET /jobs/{id} lookups from Redis for recently active jobs. Uses LRU eviction with a configurable 60 s TTL so stale reads self-correct quickly. Cache entries are invalidated on every state-transition write (claim, complete, fail) to maintain consistency. Scales horizontally via Redis Cluster with replication for HA. Frees Postgres I/O headroom for write-heavy claiming operations and keeps p99 read latency in the single-digit millisecond range even under heavy polling load.</p>",
+          "cacheStrategy": "cache-aside",
+          "persistence": false,
+          "maxMemoryGB": 16,
+          "componentName": "Result Cache (Redis)",
+          "ttl": 60,
+          "clusterMode": true
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_34",
+      "stepNumber": 34,
+      "type": "add_component",
+      "title": "Add the Result Cache",
+      "content": "## Result Cache — reduce read pressure on Postgres\n\nAdd a Redis cache for job status and result lookups. Frequently polled jobs (e.g., `GET /jobs/{id}` by clients checking completion) are served from memory rather than hitting Postgres on every request. Cache entries are invalidated on each state-transition write to prevent stale reads from reaching clients. This directly addresses the performance gap: Postgres I/O is reserved for the write-heavy claiming path."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "connection": {
+        "description": "Job API checks the Result Cache first on GET /jobs/{id} requests; on cache miss it falls back to Postgres and populates the cache for subsequent reads. Workers invalidate the relevant cache entry on every status-transition write to maintain read consistency.",
+        "edgeId": "edge_jobapi_result_cache",
+        "label": "Cache Status Reads",
+        "targetNodeId": "guided_result_cache",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_job_api"
+      },
+      "id": "6901ef1b9420d83630aca869_step_35",
+      "stepNumber": 35,
+      "type": "add_connection",
+      "title": "Job API → Result Cache (cache-aside reads)",
+      "content": "## Cache-aside pattern for job status reads\n\nThe Job API checks the Result Cache before querying Postgres. On a miss it reads from Postgres and writes the result to the cache. Workers invalidate the cache entry on every state-transition write (complete, fail, retry). This pattern offloads the majority of read traffic from Postgres so write-heavy claiming operations maintain low latency under load."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "connection": {
+        "description": "On a Result Cache miss the Job API reads the authoritative job record from the Job Store (Postgres read replica) and back-fills the cache with a 60 s TTL. Workers also invalidate the cache entry on every status-transition write so subsequent reads reflect the latest state without a stale-read window.",
+        "edgeId": "edge_result_cache_jobstore",
+        "label": "Cache-Miss Read",
+        "targetNodeId": "guided_job_store",
+        "connectionType": "database-connection",
+        "sourceNodeId": "guided_result_cache"
+      },
+      "id": "6901ef1b9420d83630aca869_step_36",
+      "stepNumber": 36,
+      "type": "add_connection",
+      "title": "Result Cache → Job Store (cache-miss fallback)",
+      "content": "## Closing the cache-miss path to the Job Store\n\nWhen a job status request misses the Result Cache, the Job API fetches the record from Postgres (via the read replica) and populates the cache for subsequent reads. This makes the cache the primary path for all status lookups and reduces Postgres read IOPS by 80–90% under typical polling patterns. Workers explicitly invalidate cache entries after every state transition to prevent stale reads."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "component": {
+        "highlightReason": "Offloads read-heavy status queries from the Postgres primary to eliminate the single-instance bottleneck.",
+        "componentType": "database",
+        "label": "Job Store Read Replica",
+        "position": {
+          "x": 300,
+          "y": 340
+        },
+        "nodeId": "guided_job_store_replica",
+        "properties": {
+          "replication": 1,
+          "pitr": false,
+          "wal": true,
+          "multiAZ": true,
+          "auditLog": false,
+          "rbac": true,
+          "description": "<p>Streaming read replica of the primary Job Store (Postgres), replicated via WAL with a replication lag target of less than 1 second. Serves all read-only queries: GET /jobs/{id} cache-miss fallbacks, admin status queries, audit lookups, and reporting workloads. Isolating reads from the primary ensures that the write-heavy job-claiming path (UPDATE ... WHERE status = 'scheduled') always has full I/O capacity. Multi-AZ standby promotion is available within 60 seconds if the primary fails. The replica is encrypted at rest, access-restricted to read-only service accounts via RBAC, and excluded from the claim transaction path to avoid split-brain scenarios.</p>",
+          "workload": "OLTP",
+          "connectionPooling": true,
+          "type": "Relational",
+          "encryption": true,
+          "engine": "Postgres",
+          "componentName": "Job Store Read Replica",
+          "storageGB": 200,
+          "backups": false
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_37",
+      "stepNumber": 37,
+      "type": "add_component",
+      "title": "Add Job Store Read Replica",
+      "content": "## Job Store Read Replica — eliminate the Postgres read bottleneck\n\nAdd a streaming read replica for the Job Store to decouple status query traffic from the write-heavy claiming path. Read replicas absorb all `GET /jobs/{id}` cache-miss reads, admin queries, and reporting workloads. The primary is exclusively reserved for ACID writes (claims, status transitions, lease updates), ensuring sub-millisecond lock contention under high job throughput. This is the primary fix for the Scalability gap: the single Postgres instance is no longer a bottleneck."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "connection": {
+        "description": "Postgres primary streams WAL changes to the read replica with a target replication lag under 1 second. The replica is used exclusively for read-only queries (status lookups, audit reads, admin queries) while the primary serves all write operations including job claiming, status transitions, and lease updates.",
+        "edgeId": "edge_jobstore_replica",
+        "label": "WAL Replication",
+        "targetNodeId": "guided_job_store_replica",
+        "connectionType": "database-connection",
+        "sourceNodeId": "guided_job_store"
+      },
+      "id": "6901ef1b9420d83630aca869_step_38",
+      "stepNumber": 38,
+      "type": "add_connection",
+      "title": "Job Store → Read Replica (WAL replication)",
+      "content": "## WAL replication — primary writes, replica reads\n\nThe Job Store primary streams WAL changes to the read replica in near real-time. All status-query reads are routed to the replica, freeing the primary for the exclusive write path: claims, completions, lease renewals, and next_run_at updates. A monitoring alert fires if replication lag exceeds 2 seconds, flagging a potential read inconsistency window before it impacts clients."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "component": {
+        "highlightReason": "Provides end-to-end request flow visibility from job creation through execution.",
+        "componentType": "tracing",
+        "label": "Distributed Tracing (Jaeger)",
+        "position": {
+          "x": 1100,
+          "y": 320
+        },
+        "nodeId": "guided_tracing",
+        "properties": {
+          "description": "<p>End-to-end distributed tracing using Jaeger with OpenTelemetry instrumentation. Traces the complete job lifecycle: from the originating POST /jobs API call through Scheduler claiming, Worker Pool execution, Result Cache reads, and any downstream service calls made by the handler. Sampling at 10% in production (100% for error paths) keeps overhead low. Traces are retained for 7 days and correlated with Prometheus metrics via trace_id for rapid root-cause analysis. Enables identification of slow handlers, scheduler bottlenecks, and cross-service latency outliers without reproducing the original conditions.</p>",
+          "componentName": "Distributed Tracing (Jaeger)",
+          "platform": "Jaeger",
+          "retention": 7,
+          "sampling": 10
+        }
+      },
+      "id": "6901ef1b9420d83630aca869_step_39",
+      "stepNumber": 39,
+      "type": "add_component",
+      "title": "Add Distributed Tracing (Jaeger)",
+      "content": "## Distributed Tracing — end-to-end visibility\n\nAdd Jaeger (OpenTelemetry) distributed tracing to instrument the full job lifecycle. A single trace spans the API request, scheduler claim, worker execution, and downstream calls. Correlated with Prometheus metrics via `trace_id`, this enables engineers to pinpoint slow handlers and cross-service latency outliers without reproducing issues manually. This addresses the observability gap identified in the assessment."
+    },
+    {
+      "phase": "Phase 5: Reliability & Operations",
+      "connection": {
+        "description": "Worker Pool emits OpenTelemetry spans covering job claim, handler execution, downstream API calls, and Result Cache interactions to Jaeger. The trace_id is propagated from the originating POST /jobs request, enabling full end-to-end lifecycle correlation across all components.",
+        "edgeId": "edge_workers_tracing",
+        "label": "Emit Spans",
+        "targetNodeId": "guided_tracing",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_worker_pool"
+      },
+      "id": "6901ef1b9420d83630aca869_step_40",
+      "stepNumber": 40,
+      "type": "add_connection",
+      "title": "Worker Pool → Distributed Tracing (emit spans)",
+      "content": "## Workers emit traces for every job execution\n\nEach worker emits OpenTelemetry spans covering claim, handler execution, downstream calls, and cache interactions. The `trace_id` propagated from the originating `POST /jobs` request enables a single Jaeger query to reveal the complete lifecycle of any job. Errors and retries attach span events with full stack traces for rapid diagnosis without trawling through raw logs."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca869_step_41",
+      "stepNumber": 41,
+      "type": "implementation",
+      "title": "MVP implementation plan (3–4 stages)",
+      "content": "Stage 1: Implement `POST /jobs`, job table in Postgres, Redis ZSET scheduling, and a single scheduler that moves due jobs to a ready list.\n\nStage 2: Implement a simple worker that claims jobs, runs a handler, and reports success/failure. Add retry/backoff and DLQ.\n\nStage 3: Add partitions, multiple schedulers, lease/heartbeat, and monitoring.\n\nStage 4: Harden for production: autoscaling, backups, and SLA testing."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca869_step_42",
+      "stepNumber": 42,
+      "type": "acceptance",
+      "title": "Acceptance criteria and benchmarks",
+      "content": "Define measurable acceptance criteria:\n\n- Jobs execute within configurable SLO (e.g., within 5s of scheduled time for 95% of jobs).\n- System can handle N million scheduled jobs with steady-state throughput X jobs/sec.\n- DLQ rate under 0.1% for healthy deployments.\n- Observability: traces and metrics available with <= 10s ingestion lag."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca869_step_43",
+      "stepNumber": 43,
+      "type": "example",
+      "title": "Sample end-to-end flow",
+      "content": "1. Client `POST /jobs` with payload and cron/schedule_at.\n2. API writes to Postgres and inserts `next_run_at` into Redis ZSET.\n3. Scheduler polls ZSET, atomically moves due job id to ready queue.\n4. Worker pops ready queue, claims job via Job Service (transactional update), executes handler.\n5. On success, worker updates status and scheduler computes next `next_run_at` for recurring jobs.\n6. On repeated failures, job moves to DLQ for manual inspection."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca869_step_44",
+      "stepNumber": 44,
+      "type": "example",
+      "title": "Minimal operational checklist",
+      "content": "Before production launch, verify:\n\n- NTP sync across cluster.\n- Redis persistence and sharding plan.\n- Postgres backups and HA.\n- Monitoring dashboards and alert rules for queue depth, job latency, DLQ growth.\n- Run load test at target scale and validate autoscaling triggers."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca869_step_45",
+      "stepNumber": 45,
+      "type": "example",
+      "title": "Operational playbooks",
+      "content": "Create runbooks for common incidents:\n\n- Requeueing stuck jobs after scheduler crash.\n- Investigating DLQ entries.\n- Handling clock skew or time drift alerts.\n- Scaling Redis or adding shards for high load."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca869_step_46",
+      "stepNumber": 46,
+      "type": "conclusion",
+      "title": "Next steps and trade-offs",
+      "content": "Start with a simple Redis ZSET + Postgres job table design as an MVP. Measure and iterate — replace components (e.g., time-wheel, Kafka, or sharded Redis) only when profiling shows bottlenecks. Be explicit about the trade-offs: operational simplicity vs absolute timing precision and exactly-once guarantees."
+    }
+  ],
+  "totalSteps": 46,
+  "phases": [
+    {
+      "name": "Phase 1: Goals & API",
+      "description": "Clarify requirements, API, job shape, and idempotency.",
+      "stepRange": [
+        1,
+        3
+      ]
+    },
+    {
+      "name": "Phase 2: Persistence & Scheduler Engine",
+      "description": "Choose storage, timer structure, recurring expansion.",
+      "stepRange": [
+        4,
+        10
+      ]
+    },
+    {
+      "name": "Phase 3: Dispatcher & Workers",
+      "description": "Design claiming, execution, retries, and leases.",
+      "stepRange": [
+        11,
+        16
+      ]
+    },
+    {
+      "name": "Phase 4: Scaling & Performance",
+      "description": "Partitioning, queuing infrastructure, and optimizations.",
+      "stepRange": [
+        17,
+        23
+      ]
+    },
+    {
+      "name": "Phase 5: Reliability & Operations",
+      "description": "Monitoring, DLQ, security, auth, recovery and multi-region.",
+      "stepRange": [
+        24,
+        40
+      ]
+    },
+    {
+      "name": "Phase 6: Implementation & Acceptance",
+      "description": "MVP plan, sample job, and acceptance criteria.",
+      "stepRange": [
+        41,
+        46
+      ]
+    }
+  ],
+  "problem_id": "6901ef1b9420d83630aca869"
+}

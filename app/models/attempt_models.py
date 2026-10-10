@@ -1,20 +1,49 @@
 """Models for problem attempt tracking."""
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from app.models.problem_models import RequirementSpec
 from app.models.reasoning_models import InterviewSession, ReasoningContext
 
 
 class AssessmentHistoryEntry(BaseModel):
-    """Compact summary of a completed assessment for progress tracking."""
+    """Compact review/check history, including explicitly unscored checks."""
 
     id: str
-    score: int = Field(ge=0, le=100)
+    score: Optional[int] = Field(default=None, ge=0, le=100)
+    scoreAvailable: bool = True
     findingCount: int = Field(default=0, ge=0)
     createdAt: str
     source: Optional[str] = None
     addressedFindingIds: List[str] = Field(default_factory=list)
+    rubricVersion: Optional[str] = None
+    requirementRevision: Optional[str] = None
+    modelVersion: Optional[str] = None
+    inputFingerprint: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_provenance(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        for camel, snake in (
+            ("scoreAvailable", "score_available"),
+            ("rubricVersion", "rubric_version"),
+            ("requirementRevision", "requirement_revision"),
+            ("modelVersion", "model_version"),
+            ("inputFingerprint", "input_fingerprint"),
+        ):
+            if camel not in data and snake in data:
+                data[camel] = data[snake]
+        if (
+            data.get("source") == "rule_based"
+            or data.get("score") is None
+            or data.get("score_available") is False
+        ):
+            data["scoreAvailable"] = False
+        return data
 
 
 class AttemptCreate(BaseModel):
@@ -30,8 +59,12 @@ class AttemptCreate(BaseModel):
         default=0, description="Time spent on the problem in seconds"
     )
     lastAssessment: Optional[Dict[str, Any]] = Field(
-        None, description="Latest assessment result"
+        None, description="Latest successful AI assessment result"
     )
+    lastAssessmentCheck: Optional[Dict[str, Any]] = Field(
+        None, description="Latest review/check result, including unavailable checks"
+    )
+    problemRequirementSpec: Optional[RequirementSpec] = None
     reasoningContext: Optional[ReasoningContext] = None
     interviewSession: Optional[InterviewSession] = None
     addressedFindingIds: List[str] = Field(default_factory=list)
@@ -44,6 +77,8 @@ class AttemptUpdate(BaseModel):
     edges: Optional[List[Any]] = None
     elapsedTime: Optional[int] = None
     lastAssessment: Optional[Dict[str, Any]] = None
+    lastAssessmentCheck: Optional[Dict[str, Any]] = None
+    problemRequirementSpec: Optional[RequirementSpec] = None
     reasoningContext: Optional[ReasoningContext] = None
     interviewSession: Optional[InterviewSession] = None
     addressedFindingIds: Optional[List[str]] = None
@@ -66,11 +101,13 @@ class AttemptResponse(BaseModel):
     )
     elapsedTime: int = Field(default=0, description="Total time spent in seconds")
     lastAssessment: Optional[Dict[str, Any]] = Field(
-        None, description="Latest assessment result"
+        None, description="Latest successful AI assessment result"
     )
+    lastAssessmentCheck: Optional[Dict[str, Any]] = None
+    problemRequirementSpec: Optional[RequirementSpec] = None
     reasoningContext: Optional[ReasoningContext] = None
     interviewSession: Optional[InterviewSession] = None
-    assessmentCount: int = Field(default=0, description="Number of assessments run")
+    assessmentCount: int = Field(default=0, description="Number of scored AI assessments")
     assessmentHistory: List[AssessmentHistoryEntry] = Field(default_factory=list)
     addressedFindingIds: List[str] = Field(default_factory=list)
     createdAt: str = Field(..., description="When the attempt was first created")
@@ -108,6 +145,8 @@ class PublicSolutionResponse(BaseModel):
     nodes: List[Any] = Field(default_factory=list)
     edges: List[Any] = Field(default_factory=list)
     lastAssessment: Optional[Dict[str, Any]] = None
+    lastAssessmentCheck: Optional[Dict[str, Any]] = None
+    problemRequirementSpec: Optional[RequirementSpec] = None
     authorName: Optional[str] = None
     authorPicture: Optional[str] = None
     publishedAt: Optional[str] = None

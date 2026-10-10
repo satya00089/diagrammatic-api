@@ -1,0 +1,435 @@
+{
+  "version": "1.0",
+  "steps": [
+    {
+      "phase": "Phase 1: Goals & API",
+      "id": "6901ef1b9420d83630aca87e_step_01",
+      "stepNumber": 1,
+      "type": "explanation",
+      "title": "Problem overview and goals",
+      "content": "Design a Parts Compatibility feature that answers: given a product (make/model/year or SKU), which parts are compatible? Goals: fast (sub-100ms) lookup for UI, accurate relationships for cross-references, support bulk checks, and simple operational workflows for updating compatibility data. Consider correctness vs latency tradeoffs and how to represent complex rules (fitment tables, vehicle attributes, optional trims)."
+    },
+    {
+      "phase": "Phase 1: Goals & API",
+      "id": "6901ef1b9420d83630aca87e_step_02",
+      "stepNumber": 2,
+      "type": "explanation",
+      "title": "User journeys & API surface",
+      "content": "Primary flows: (1) Customer enters vehicle or part number and sees a filtered list of compatible parts; (2) Admin uploads bulk compatibility CSV/feeds; (3) Merchants inspect cross-reference data. Minimal public API: POST /compatibility/query (single or bulk), GET /parts/{sku}/compatibility, POST /compatibility/import. Include pagination, filtering, and confidence flags for fuzzy matches."
+    },
+    {
+      "phase": "Phase 1: Goals & API",
+      "component": {
+        "highlightReason": "Public API for queries, bulk imports, and admin operations.",
+        "componentType": "api-gateway",
+        "label": "Compatibility API",
+        "position": {
+          "x": 80,
+          "y": 160
+        },
+        "nodeId": "compat_api",
+        "properties": {
+          "rateLimiting": true,
+          "tlsTermination": true,
+          "description": "<p>HTTP API exposing single and bulk compatibility queries, admin import endpoints, and search-backed cross-references.</p>",
+          "componentName": "Parts Compatibility API",
+          "inputValidation": true,
+          "requestsPerSecond": 2000,
+          "authentication": "OAuth 2.0"
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_03",
+      "stepNumber": 3,
+      "type": "add_component",
+      "title": "Add the Compatibility API",
+      "content": "API validates input (make/model/year or SKU), enforces auth for admin imports, and routes queries to the Compatibility Service or Search when appropriate. Bulk imports are accepted asynchronously with a job id for status polling."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "Core service that evaluates compatibility rules and orchestrates lookups.",
+        "componentType": "backend-server",
+        "label": "Compatibility Service",
+        "position": {
+          "x": 300,
+          "y": 160
+        },
+        "nodeId": "compat_service",
+        "properties": {
+          "description": "<p>Service implementing rule engine, graph traversals, precomputed matrices and fallback heuristics. Exposes internal lookup APIs consumed by the API and bulk processors.</p>",
+          "componentName": "Compatibility Service",
+          "instances": 4,
+          "retry": true,
+          "architecture": "microservices"
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_04",
+      "stepNumber": 4,
+      "type": "add_component",
+      "title": "Add the Compatibility Service",
+      "content": "This service centralizes compatibility logic: exact matches via graph lookups, rule evaluation for conditional fitment (e.g., trim-level exceptions), and score-based fallbacks when data is incomplete. Keep rule evaluation deterministic and testable."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "Natural fit to model parts, vehicles, and fitment relationships.",
+        "componentType": "database",
+        "label": "Graph DB (Neo4j)",
+        "position": {
+          "x": 520,
+          "y": 160
+        },
+        "nodeId": "compat_graph_db",
+        "properties": {
+          "replication": 3,
+          "encryption": true,
+          "engine": "neo4j",
+          "description": "<p>Stores nodes for SKUs, vehicle variants, attributes and edges for compatibility relationships. Efficient traversal for indirect compatibility queries.</p>",
+          "componentName": "Graph DB (Neo4j)",
+          "type": "Graph",
+          "backups": true
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_05",
+      "stepNumber": 5,
+      "type": "add_component",
+      "title": "Add the Graph Database",
+      "content": "Use labeled nodes (Part, Vehicle, Trim) and relationship types (fits, replaces, supersedes). Precompute common paths or ancestors for very frequent queries to reduce traversal time."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "connection": {
+        "description": "API forwards validated queries to the Compatibility Service for evaluation.",
+        "edgeId": "edge_api_compat",
+        "label": "API → Compatibility Service",
+        "targetNodeId": "compat_service",
+        "connectionType": "http",
+        "sourceNodeId": "compat_api"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_06",
+      "stepNumber": 6,
+      "type": "add_connection",
+      "title": "API → Compatibility Service (query routing)",
+      "content": "Route single-item queries to the Compatibility Service synchronously; accept bulk requests and return a job id after handing them off to the bulk processor."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "connection": {
+        "description": "Service performs graph traversals and pattern matches against the graph store.",
+        "edgeId": "edge_compat_graph",
+        "label": "Compat Service → Graph DB",
+        "targetNodeId": "compat_graph_db",
+        "connectionType": "database-connection",
+        "sourceNodeId": "compat_service"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_07",
+      "stepNumber": 7,
+      "type": "add_connection",
+      "title": "Compatibility Service → Graph DB (fitment lookup)",
+      "content": "Use parameterized traversal queries and pagination for large result sets. Push heavy path searches to background jobs if needed."
+    },
+    {
+      "phase": "Phase 3: Search & Query",
+      "component": {
+        "highlightReason": "Search to support SKU lookup, fuzzy matching and front-end filtering.",
+        "componentType": "database",
+        "label": "Search Index (Elasticsearch)",
+        "position": {
+          "x": 300,
+          "y": 320
+        },
+        "nodeId": "compat_search",
+        "properties": {
+          "replication": 2,
+          "description": "<p>Indexed SKU metadata and vehicle attribute documents for fast filtering, text search and faceted navigation.</p>",
+          "componentName": "Search Index (Elasticsearch)",
+          "engine": "elasticsearch"
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_08",
+      "stepNumber": 8,
+      "type": "add_component",
+      "title": "Add Search Index (Elasticsearch)",
+      "content": "Keep search for fast SKU suggestions, attribute filters (make/model/year) and cross-reference lookups. Use index-time enrichment from the graph for frequently used computed fields."
+    },
+    {
+      "phase": "Phase 3: Search & Query",
+      "connection": {
+        "description": "Search service provides SKU suggestions and filter results to the API for UI responsiveness.",
+        "edgeId": "edge_api_search",
+        "label": "API → Search",
+        "targetNodeId": "compat_search",
+        "connectionType": "http",
+        "sourceNodeId": "compat_api"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_09",
+      "stepNumber": 9,
+      "type": "add_connection",
+      "title": "API → Search (suggestions & filters)",
+      "content": "Prefer search for lightweight queries and the UI list rendering; defer graph traversal for deeper compatibility checks or authoritative answering when needed."
+    },
+    {
+      "phase": "Phase 3: Search & Query",
+      "component": {
+        "highlightReason": "Cache results for hot vehicle+SKU lookups to achieve sub-100ms UI latency.",
+        "componentType": "cache",
+        "label": "Compatibility Cache (Redis)",
+        "position": {
+          "x": 520,
+          "y": 320
+        },
+        "nodeId": "compat_cache",
+        "properties": {
+          "replication": true,
+          "description": "<p>Stores recent query results and precomputed compatibility matrices for fast read paths.</p>",
+          "componentName": "Compatibility Cache (Redis)",
+          "engine": "redis",
+          "ttl": 3600,
+          "inMemory": true
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_10",
+      "stepNumber": 10,
+      "type": "add_component",
+      "title": "Add the Cache (Redis)",
+      "content": "Cache authoritative compatibility responses for popular vehicles or SKUs. Invalidate or update entries when ingestion publishes changes."
+    },
+    {
+      "phase": "Phase 3: Search & Query",
+      "connection": {
+        "description": "Service writes computed results to cache and reads cache before falling back to graph/search.",
+        "edgeId": "edge_compat_cache",
+        "label": "Compat Service ↔ Cache",
+        "targetNodeId": "compat_cache",
+        "connectionType": "data-flow",
+        "sourceNodeId": "compat_service"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_11",
+      "stepNumber": 11,
+      "type": "add_connection",
+      "title": "Compatibility Service → Cache (read/write)",
+      "content": "Read-through and write-through cache patterns reduce graph load. Use TTLs and explicit invalidation on updates."
+    },
+    {
+      "phase": "Phase 4: Matching Engine & Bulk",
+      "component": {
+        "highlightReason": "Ingests vendor feeds, CSV uploads and background updates into the graph store.",
+        "componentType": "backend-server",
+        "label": "Compatibility ETL",
+        "position": {
+          "x": 80,
+          "y": 320
+        },
+        "nodeId": "compat_ingest",
+        "properties": {
+          "description": "<p>Parses feeds, normalizes SKUs, applies mapping rules and writes edges/nodes into the graph. Emits change events for downstream indexing and cache invalidation.</p>",
+          "componentName": "Compatibility ETL",
+          "instances": 2,
+          "architecture": "batch"
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_12",
+      "stepNumber": 12,
+      "type": "add_component",
+      "title": "Add the Data Ingestion Pipeline (ETL)",
+      "content": "Design ingest jobs to be idempotent and report per-row errors. Maintain provenance metadata to allow rollbacks or manual correction."
+    },
+    {
+      "phase": "Phase 4: Matching Engine & Bulk",
+      "connection": {
+        "description": "ETL writes normalized nodes/edges and emits change events.",
+        "edgeId": "edge_ingest_graph",
+        "label": "ETL → Graph DB",
+        "targetNodeId": "compat_graph_db",
+        "connectionType": "database-connection",
+        "sourceNodeId": "compat_ingest"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_13",
+      "stepNumber": 13,
+      "type": "add_connection",
+      "title": "ETL → Graph DB (write feed updates)",
+      "content": "Use batched writes and bulk import APIs where possible to accelerate large updates. Emit fine-grained events so search and cache can stay consistent."
+    },
+    {
+      "phase": "Phase 4: Matching Engine & Bulk",
+      "component": {
+        "highlightReason": "Handles large bulk compatibility checks and re-computation tasks.",
+        "componentType": "backend-server",
+        "label": "Bulk Processor",
+        "position": {
+          "x": 300,
+          "y": 480
+        },
+        "nodeId": "compat_bulk",
+        "properties": {
+          "description": "<p>Worker pool for bulk SKU compatibility checks, reindex windows, and expensive graph traversals that can't be synchronous.</p>",
+          "componentName": "Bulk Processor",
+          "instances": 5,
+          "architecture": "batch"
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_14",
+      "stepNumber": 14,
+      "type": "add_component",
+      "title": "Add the Bulk Processor",
+      "content": "Bulk jobs run asynchronously, update the graph and emit cache invalidations. Provide job monitoring and restart semantics for failed batches."
+    },
+    {
+      "phase": "Phase 4: Matching Engine & Bulk",
+      "connection": {
+        "description": "Bulk worker writes results and corrections to the graph database.",
+        "edgeId": "edge_bulk_graph",
+        "label": "Bulk → Graph DB",
+        "targetNodeId": "compat_graph_db",
+        "connectionType": "database-connection",
+        "sourceNodeId": "compat_bulk"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_15",
+      "stepNumber": 15,
+      "type": "add_connection",
+      "title": "Bulk Processor → Graph DB (batch updates)",
+      "content": "Ensure bulk writes are idempotent and instrumented. Large reprocessing windows should be throttled to avoid degrading online query latency."
+    },
+    {
+      "phase": "Phase 5: Scaling & Performance",
+      "component": {
+        "highlightReason": "Decouples ingest, indexing, and cache invalidation workflows.",
+        "componentType": "message-broker",
+        "label": "Event Bus (Kafka)",
+        "position": {
+          "x": 520,
+          "y": 480
+        },
+        "nodeId": "compat_kafka",
+        "properties": {
+          "partitions": 12,
+          "replication": 3,
+          "description": "<p>Streams change events from ETL and bulk processors to consumers that update search indices and caches.</p>",
+          "componentName": "Event Bus (Kafka)",
+          "retention": 168
+        }
+      },
+      "id": "6901ef1b9420d83630aca87e_step_16",
+      "stepNumber": 16,
+      "type": "add_component",
+      "title": "Add Message Broker (Kafka)",
+      "content": "Publish fine-grained change events (node/edge upserts, deletes). Consumers will update search indices and trigger targeted cache invalidations."
+    },
+    {
+      "phase": "Phase 5: Scaling & Performance",
+      "connection": {
+        "description": "ETL publishes normalized change events so downstream systems can react asynchronously.",
+        "edgeId": "edge_ingest_kafka",
+        "label": "ETL → Event Bus",
+        "targetNodeId": "compat_kafka",
+        "connectionType": "message-queue",
+        "sourceNodeId": "compat_ingest"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_17",
+      "stepNumber": 17,
+      "type": "add_connection",
+      "title": "ETL → Event Bus (publish changes)",
+      "content": "Asynchronous events allow near-real-time updates to search and cache without coupling ingest latency to user queries."
+    },
+    {
+      "phase": "Phase 5: Scaling & Performance",
+      "connection": {
+        "description": "Consumers apply events to graph and search stores and emit cache invalidations.",
+        "edgeId": "edge_kafka_consumers",
+        "label": "Event Bus → Consumers",
+        "targetNodeId": "compat_graph_db",
+        "connectionType": "message-queue",
+        "sourceNodeId": "compat_kafka"
+      },
+      "id": "6901ef1b9420d83630aca87e_step_18",
+      "stepNumber": 18,
+      "type": "add_connection",
+      "title": "Event Bus → Graph & Search (consumers)",
+      "content": "Consumers should be idempotent and designed for retries. Use transactional outbox patterns when the origin system must guarantee delivery."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca87e_step_19",
+      "stepNumber": 19,
+      "type": "explanation",
+      "title": "Matching strategies and trade-offs",
+      "content": "Trade-offs: precompute compatibility matrices for top-N vehicles to get O(1) reads vs compute-on-demand with graph traversals for correctness. Use hybrid: cache precomputed results for popular vehicles/SKUs and fall back to graph traversal for rare queries. For complex rules, run rule engine in a deterministic order and surface confidence scores to the UI."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca87e_step_20",
+      "stepNumber": 20,
+      "type": "explanation",
+      "title": "Scaling, caching and latency targets",
+      "content": "Strategies: shard graph by vehicle segment or tenant, keep hot partitions in memory, use Redis for sub-100ms reads, and autoscale Compatibility Service based on queue depth. Measure P50/P95 latency, cache hit ratio, and stale result rates after ingestion. Aim for 95th percentile < 200ms on UI queries."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca87e_step_21",
+      "stepNumber": 21,
+      "type": "implementation",
+      "title": "MVP implementation plan",
+      "content": "Stage 1: Build API + Compatibility Service, wire Graph DB with a small sample feed, and return exact matches. Stage 2: Add Search index and Redis cache for UI. Stage 3: Implement ETL and event bus for incremental updates. Stage 4: Add bulk processor, monitoring, and expanded scale testing."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca87e_step_22",
+      "stepNumber": 22,
+      "type": "acceptance",
+      "title": "Acceptance criteria and benchmarks",
+      "content": "Acceptance: (1) Single SKU compatibility lookup returns correct set for 99% of test cases; (2) UI latency p95 < 200ms at target load; (3) Bulk import processes N records/hour and reports per-row errors; (4) Cache invalidation ensures fresh results within 60s after a data update."
+    }
+  ],
+  "totalSteps": 22,
+  "phases": [
+    {
+      "name": "Phase 1: Goals & API",
+      "description": "Clarify user journeys, API surface and lookup latency targets.",
+      "stepRange": [
+        1,
+        3
+      ]
+    },
+    {
+      "name": "Phase 2: Data Model & Ingestion",
+      "description": "Define canonical compatibility model, ingestion and update pipelines.",
+      "stepRange": [
+        4,
+        7
+      ]
+    },
+    {
+      "name": "Phase 3: Search & Query",
+      "description": "Design fast lookup and cross-reference APIs backed by search and caches.",
+      "stepRange": [
+        8,
+        11
+      ]
+    },
+    {
+      "name": "Phase 4: Matching Engine & Bulk",
+      "description": "Graph-based matching, rule engine and bulk processing paths.",
+      "stepRange": [
+        12,
+        15
+      ]
+    },
+    {
+      "name": "Phase 5: Scaling & Performance",
+      "description": "Sharding, caching, precomputation and throughput planning.",
+      "stepRange": [
+        16,
+        18
+      ]
+    },
+    {
+      "name": "Phase 6: Implementation & Acceptance",
+      "description": "MVP plan, acceptance tests and operational readiness.",
+      "stepRange": [
+        19,
+        22
+      ]
+    }
+  ],
+  "problem_id": "6901ef1b9420d83630aca87e"
+}

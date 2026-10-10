@@ -2,7 +2,7 @@
 
 from datetime import datetime
 import re
-from typing import cast
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -16,6 +16,36 @@ def problem_slug(title: str) -> str:
         .replace("'", "")
     )
     return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+
+
+class RequirementItem(BaseModel):
+    """One approved capability or quality target, with explicit exercise scope."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    scope: Literal["core", "extension"]
+    category: str | None = None
+
+
+class RequirementSpec(BaseModel):
+    """Versioned requirements shared by catalog records and declared contexts."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    schemaVersion: Literal[1] = 1
+    revision: str = Field(min_length=1)
+    functional: list[RequirementItem] = Field(default_factory=list)
+    nonFunctional: list[RequirementItem] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_requirement_ids(self) -> "RequirementSpec":
+        ids = [item.id for item in self.functional + self.nonFunctional]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Requirement IDs must be unique across the specification")
+        return self
 
 
 class ProblemModel(BaseModel):
@@ -33,6 +63,7 @@ class ProblemModel(BaseModel):
     estimatedTime: str = Field(alias="estimated_time")
     requirements: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    requirementSpec: RequirementSpec | None = None
     hints: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)

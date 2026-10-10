@@ -22,30 +22,25 @@ async def create_or_update_attempt(
     """Create or update a problem attempt (requires authentication)."""
     user_id = current_user["user_id"]
 
-    attempt = dynamodb_service.create_or_update_attempt(
-        user_id=user_id,
-        problem_id=request.problemId,
-        title=request.title,
-        difficulty=request.difficulty,
-        category=request.category,
-        nodes=request.nodes,
-        edges=request.edges,
-        elapsed_time=request.elapsedTime,
-        last_assessment=cast(
-            Optional[Dict[str, Any]], request.model_dump().get("lastAssessment")
-        ),
-        reasoning_context=(
-            request.reasoningContext.model_dump(exclude_none=True)
-            if request.reasoningContext
-            else None
-        ),
-        interview_session=(
-            request.interviewSession.model_dump(exclude_none=True)
-            if request.interviewSession
-            else None
-        ),
-        addressed_finding_ids=request.addressedFindingIds,
-    )
+    try:
+        attempt = dynamodb_service.create_or_update_attempt(
+            user_id=user_id,
+            problem_id=request.problemId,
+            title=request.title,
+            difficulty=request.difficulty,
+            category=request.category,
+            nodes=request.nodes,
+            edges=request.edges,
+            elapsed_time=request.elapsedTime,
+            last_assessment=cast(Optional[Dict[str, Any]], request.model_dump().get("lastAssessment")),
+            reasoning_context=request.reasoningContext.model_dump(exclude_none=True) if request.reasoningContext else None,
+            interview_session=request.interviewSession.model_dump(exclude_none=True) if request.interviewSession else None,
+            addressed_finding_ids=request.addressedFindingIds,
+            last_assessment_check=request.lastAssessmentCheck,
+            problem_requirement_spec=request.problemRequirementSpec.model_dump() if request.problemRequirementSpec else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     return attempt
 

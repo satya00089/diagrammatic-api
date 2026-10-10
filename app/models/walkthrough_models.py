@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GuidedComponentStep(BaseModel):
@@ -68,6 +68,15 @@ class GuidedStep(BaseModel):
     connection: Optional[GuidedConnectionStep] = None
     decision: Optional[GuidedDecisionPoint] = None
     scaleTrigger: Optional[GuidedScaleTrigger] = None
+    requirementIds: List[str] = Field(default_factory=list)
+    componentUpdate: Optional["GuidedComponentUpdate"] = None
+
+
+class GuidedComponentUpdate(BaseModel):
+    """Design changes explicitly accepted by the learner, not inferred from reading."""
+
+    nodeId: str
+    properties: Dict[str, Any] = Field(default_factory=dict)
 
 
 class GuidedWalkthroughPhase(BaseModel):
@@ -86,3 +95,4 @@ class GuidedWalkthrough(BaseModel):
     totalSteps: int
     phases: List[GuidedWalkthroughPhase] = []
     steps: List[GuidedStep] = []
+    requirementRevision: Optional[str] = None

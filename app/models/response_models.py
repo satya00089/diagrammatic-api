@@ -1,6 +1,6 @@
 """Models for system design assessment responses."""
 
-from typing import Dict, List, Optional, cast
+from typing import Dict, List, Literal, Optional, cast
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,20 @@ class AssessmentSource(str, Enum):
 
     AI = "ai"
     RULE_BASED = "rule_based"
+
+
+class AssessmentVerdict(str, Enum):
+    STRONG_ALIGNMENT = "strong_alignment"
+    NEEDS_REVISION = "needs_revision"
+    MORE_CONTEXT_NEEDED = "more_context_needed"
+    UNAVAILABLE = "unavailable"
+
+
+class FindingKind(str, Enum):
+    DEFECT = "defect"
+    CLARIFICATION = "clarification"
+    EXTENSION = "extension"
+    STRENGTH = "strength"
 
 
 class FeedbackCategory(str, Enum):
@@ -63,6 +77,37 @@ class ReviewFinding(BaseModel):
     explanation: str = Field(min_length=1)
     recommendation: Optional[str] = None
     severity: FindingSeverity = FindingSeverity.IMPROVEMENT
+    evidence_ids: List[str] = Field(default_factory=list)
+    requirement_ids: List[str] = Field(default_factory=list)
+    kind: FindingKind = FindingKind.EXTENSION
+    criterion: Optional[str] = None
+    scored_gap: bool = Field(default=False, strict=True)
+
+
+class RequirementCoverage(BaseModel):
+    """Evidence-supported coverage of one published requirement."""
+
+    requirement_id: str
+    status: Literal["supported", "partial", "missing", "needs_clarification"]
+    explanation: str = Field(min_length=1)
+    evidence_ids: List[str] = Field(default_factory=list)
+
+
+class IntegrityCheck(BaseModel):
+    """An observable diagram check, never an architecture grade."""
+
+    check: str
+    status: Literal["passed", "failed"]
+    explanation: str
+    evidence_ids: List[str] = Field(default_factory=list)
+
+
+class StructuralCheck(BaseModel):
+    """Fallback walkthrough observations supplied by the semantic checker."""
+
+    title: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    explanation: str = Field(min_length=1)
 
 
 class ScoreBreakdown(BaseModel):
@@ -87,6 +132,15 @@ class AssessmentResponse(BaseModel):
 
     is_valid: bool
     overall_score: int = Field(ge=0, le=100)
+    score_available: bool = True
+    verdict: AssessmentVerdict = AssessmentVerdict.MORE_CONTEXT_NEEDED
+    rubric_version: str = "2.0"
+    requirement_revision: Optional[str] = None
+    problem_id: Optional[str] = None
+    requirement_coverage: List[RequirementCoverage] = Field(default_factory=list)
+    integrity_checks: List[IntegrityCheck] = Field(default_factory=list)
+    structural_checks: List[StructuralCheck] = Field(default_factory=list)
+    model_version: Optional[str] = None
     scores: ScoreBreakdown
     feedback: List[ValidationFeedback]
     summary: Optional[str] = None

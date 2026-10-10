@@ -1,0 +1,1619 @@
+{
+  "version": "1.0",
+  "steps": [
+    {
+      "phase": "Phase 1: Goals & API",
+      "id": "6901ef1b9420d83630aca86c_step_01",
+      "stepNumber": 1,
+      "type": "explanation",
+      "title": "Problem overview and goals",
+      "content": "Design a Price Alert System that allows users to set alerts for products and notifies them when prices drop below their target. The system must support near real-time monitoring, handle millions of alerts and products, and deliver notifications through multiple channels (email, SMS, app).\n\nKey goals include:\n- Scalability to millions of users and alerts\n- Low-latency price monitoring and alerting\n- Accurate and reliable notification delivery\n- Efficient price tracking from multiple sources (polling, webhooks, vendor feeds)\n- Cost-effective operations and maintainability\n- Security and privacy for user data\n- Observability for troubleshooting and performance monitoring\n\nThis system is critical for e-commerce and financial platforms where timely price information drives user engagement and revenue. It must be resilient to failures, easy to operate, and extensible for future notification channels or alert types."
+    },
+    {
+      "phase": "Phase 1: Goals & API",
+      "id": "6901ef1b9420d83630aca86c_step_02",
+      "stepNumber": 2,
+      "type": "explanation",
+      "title": "User journeys & API surface",
+      "content": "Primary user journeys:\n1. A user browses products and sets a price alert specifying a target price or percentage drop, and preferred notification channel.\n2. The system continuously monitors prices from multiple sources, updating the product catalog and cache.\n3. When a price drop matches an alert, the system triggers a notification via the user's chosen channel (email, SMS, app push).\n4. Users can view, update, or delete their alerts, and review price history for products.\n\nAPI endpoints:\n- POST /alerts: Create a new alert (requires authentication, input validation)\n- GET /alerts: List user alerts\n- DELETE /alerts/{id}: Remove an alert\n- GET /products/{id}/price-history: Retrieve price history for a product\n\nThe API must support versioning, error handling, and rate limiting to prevent abuse. It should also provide clear error messages and documentation for developers integrating with the system."
+    },
+    {
+      "phase": "Phase 1: Goals & API",
+      "component": {
+        "highlightReason": "Public API for alert creation, management, and product queries.",
+        "componentType": "api-gateway",
+        "label": "Alert API",
+        "position": {
+          "x": 80,
+          "y": 160
+        },
+        "nodeId": "alert_api",
+        "properties": {
+          "_customProperties": [
+            {
+              "id": "alert_api_rateLimitPolicy",
+              "label": "Rate Limit Policy",
+              "type": "text",
+              "value": "100 requests/min/user",
+              "key": "rateLimitPolicy"
+            },
+            {
+              "id": "alert_api_globalRateLimit",
+              "label": "Global Rate Limit",
+              "type": "text",
+              "value": "10000 requests/min",
+              "key": "globalRateLimit"
+            },
+            {
+              "id": "alert_api_inputValidationPolicy",
+              "label": "Input Validation Policy",
+              "type": "textarea",
+              "value": "Strict schema validation on all POST/PUT endpoints",
+              "key": "inputValidationPolicy"
+            },
+            {
+              "id": "alert_api_encryptionAtRest",
+              "label": "Encryption At Rest",
+              "type": "boolean",
+              "value": true,
+              "key": "encryptionAtRest"
+            },
+            {
+              "id": "alert_api_rbac",
+              "label": "RBAC",
+              "type": "boolean",
+              "value": true,
+              "key": "rbac"
+            },
+            {
+              "id": "alert_api_featureFlags",
+              "label": "Feature Flags",
+              "type": "boolean",
+              "value": true,
+              "key": "featureFlags"
+            },
+            {
+              "id": "alert_api_waf",
+              "label": "WAF",
+              "type": "boolean",
+              "value": true,
+              "key": "waf"
+            },
+            {
+              "id": "alert_api_internalTLS",
+              "label": "Internal TLS",
+              "type": "boolean",
+              "value": true,
+              "key": "internalTLS"
+            },
+            {
+              "id": "alert_api_mTLS",
+              "label": "mTLS",
+              "type": "boolean",
+              "value": true,
+              "key": "mTLS"
+            },
+            {
+              "id": "alert_api_cdnIntegration",
+              "label": "CDN Integration",
+              "type": "boolean",
+              "value": true,
+              "key": "cdnIntegration"
+            }
+          ],
+          "rateLimiting": true,
+          "tlsTermination": true,
+          "description": "<p>HTTP API for users to create, view, and delete price alerts. Implements authentication (OAuth 2.0), <b>strict input validation</b>, <b>aggressive rate limiting</b>, and authorization checks (RBAC). Includes DDoS protection, API versioning, and <b>encryption at rest</b> for all sensitive data. Logs all requests for audit and troubleshooting. Provides clear error messages and supports future extensibility for new alert types or channels. <b>Feature flags</b> enable safe rollout of new features. <b>All sensitive endpoints are protected with rate limiting, input validation, and fine-grained access control to enhance security.</b></p>",
+          "componentName": "Price Alert API",
+          "inputValidation": true,
+          "requestsPerSecond": 2000,
+          "authentication": "OAuth 2.0"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_03",
+      "stepNumber": 3,
+      "type": "add_component",
+      "title": "Add the Alert API",
+      "content": "API validates alert parameters (product, threshold, channel), enforces OAuth 2.0 authentication, RBAC authorization, and routes requests to the Alert Service. All sensitive data is encrypted at rest. Feature flags allow safe rollout of new alert types and channels."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "Core service for alert logic, deduplication, and notification orchestration.",
+        "componentType": "backend-server",
+        "label": "Alert Service",
+        "position": {
+          "x": 300,
+          "y": 160
+        },
+        "nodeId": "alert_service",
+        "properties": {
+          "description": "<p>Service manages alert state, evaluates triggers, deduplicates notifications, and orchestrates delivery to notification channels. Implements structured logging, distributed tracing, health checks, and circuit breaker patterns for downstream failures. Enforces RBAC authorization, rate limiting, and <b>encryption at rest</b> for all alert data. Supports <b>feature flags</b> for safe deployment of new logic. Designed for horizontal scalability, auto-scaling, and high availability.</p>",
+          "componentName": "Alert Service",
+          "_customProperties": [
+            {
+              "id": "alert_service_encryptionAtRest",
+              "label": "Encryption At Rest",
+              "type": "boolean",
+              "value": true,
+              "key": "encryptionAtRest"
+            },
+            {
+              "id": "alert_service_rbac",
+              "label": "RBAC",
+              "type": "boolean",
+              "value": true,
+              "key": "rbac"
+            },
+            {
+              "id": "alert_service_featureFlags",
+              "label": "Feature Flags",
+              "type": "boolean",
+              "value": true,
+              "key": "featureFlags"
+            },
+            {
+              "id": "alert_service_healthChecks",
+              "label": "Health Checks",
+              "type": "boolean",
+              "value": true,
+              "key": "healthChecks"
+            },
+            {
+              "id": "alert_service_circuitBreaker",
+              "label": "Circuit Breaker",
+              "type": "boolean",
+              "value": true,
+              "key": "circuitBreaker"
+            },
+            {
+              "id": "alert_service_autoScaling",
+              "label": "Auto Scaling",
+              "type": "boolean",
+              "value": true,
+              "key": "autoScaling"
+            }
+          ],
+          "instances": 4,
+          "retry": true,
+          "architecture": "microservices"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_04",
+      "stepNumber": 4,
+      "type": "add_component",
+      "title": "Add the Alert Service",
+      "content": "Centralizes alert logic: matching price drops, deduplication, and notification orchestration. All alert data is encrypted at rest. RBAC ensures only authorized users can manage alerts. Health checks and auto-scaling maximize reliability. Feature flags enable safe experimentation."
+    },
+    {
+      "phase": "Phase 1: Goals & API",
+      "connection": {
+        "description": "Alert API forwards validated alert requests to the Alert Service for processing.",
+        "edgeId": "edge_api_alertsvc",
+        "label": "API → Alert Service",
+        "targetNodeId": "alert_service",
+        "connectionType": "api-call",
+        "sourceNodeId": "alert_api"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_05",
+      "stepNumber": 5,
+      "type": "add_connection",
+      "title": "Alert API → Alert Service (route requests)",
+      "content": "API acts as the entry point, forwarding validated requests to the Alert Service for alert creation, updates, and deletions."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "Stores product metadata, price history, and alert associations.",
+        "componentType": "database",
+        "label": "Product Catalog DB",
+        "position": {
+          "x": 520,
+          "y": 160
+        },
+        "nodeId": "product_db",
+        "properties": {
+          "replication": 2,
+          "_customProperties": [
+            {
+              "id": "product_db_readReplicas",
+              "label": "Read Replicas",
+              "type": "number",
+              "value": 2,
+              "key": "readReplicas"
+            },
+            {
+              "id": "product_db_managedService",
+              "label": "Managed Service",
+              "type": "boolean",
+              "value": true,
+              "key": "managedService"
+            },
+            {
+              "id": "product_db_aggressiveCaching",
+              "label": "Aggressive Caching",
+              "type": "boolean",
+              "value": true,
+              "key": "aggressiveCaching"
+            },
+            {
+              "id": "product_db_cacheWarming",
+              "label": "Cache Warming",
+              "type": "boolean",
+              "value": true,
+              "key": "cacheWarming"
+            },
+            {
+              "id": "product_db_encryptionAtRest",
+              "label": "Encryption At Rest",
+              "type": "boolean",
+              "value": true,
+              "key": "encryptionAtRest"
+            }
+          ],
+          "encryption": true,
+          "engine": "postgres",
+          "description": "<p>Stores product details, price history, and alert associations. Supports efficient queries for price lookups and alert matching. Implements connection pooling, <b>aggressive caching</b>, cache warming, query optimization, and backup strategies for reliability and performance. Provides audit trails for price changes and alert mappings. <b>All sensitive data is encrypted at rest.</b> <b>Uses read replicas to improve performance and reliability under heavy load.</b> <b>Recommended to use a managed database service for cost efficiency and operational simplicity.</b></p>",
+          "componentName": "Product Catalog DB",
+          "type": "Relational",
+          "backups": true
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_06",
+      "stepNumber": 6,
+      "type": "add_component",
+      "title": "Add the Product Catalog DB",
+      "content": "Schema includes products, prices, and alert mappings. Index on product_id and price for fast lookups. Aggressive caching and query optimization ensure high performance. All data is encrypted at rest."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "User account and preferences table.",
+        "componentType": "entity",
+        "data": {
+          "attributes": [
+            {
+              "name": "id",
+              "isPrimaryKey": true,
+              "id": "er_users_attr_1",
+              "type": "UUID",
+              "isNullable": false
+            },
+            {
+              "name": "email",
+              "id": "er_users_attr_2",
+              "type": "VARCHAR(255)",
+              "isNullable": false
+            },
+            {
+              "name": "hashed_password",
+              "id": "er_users_attr_3",
+              "type": "VARCHAR(255)",
+              "isNullable": false
+            },
+            {
+              "name": "created_at",
+              "id": "er_users_attr_4",
+              "type": "TIMESTAMP",
+              "isNullable": false
+            },
+            {
+              "name": "preferences",
+              "id": "er_users_attr_5",
+              "type": "JSONB",
+              "isNullable": true
+            },
+            {
+              "name": "notification_preferences",
+              "id": "er_users_attr_6",
+              "type": "JSONB",
+              "isNullable": true
+            }
+          ]
+        },
+        "label": "Users",
+        "position": {
+          "x": 420,
+          "y": 320
+        },
+        "nodeId": "er_users",
+        "properties": {
+          "description": "<p>Stores user accounts, authentication data, and notification preferences. This table contains user identifiers, authentication hashes, and structured preference blobs consumed by the Alert Service to personalize notifications. Index <code>email</code> for fast lookup, encrypt sensitive fields at rest, and apply strict RBAC and audit logging for access. Designed for high read availability using read replicas and caching for session/profile queries.</p>",
+          "componentName": "Users"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_07",
+      "stepNumber": 7,
+      "type": "add_component",
+      "title": "Add entity: Users",
+      "content": "Users entity: accounts and notification preferences used by the Alert Service."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "Product catalog table with current price and metadata.",
+        "componentType": "entity",
+        "data": {
+          "attributes": [
+            {
+              "name": "id",
+              "isPrimaryKey": true,
+              "id": "er_products_attr_1",
+              "type": "UUID",
+              "isNullable": false
+            },
+            {
+              "name": "sku",
+              "id": "er_products_attr_2",
+              "type": "VARCHAR(100)",
+              "isNullable": false
+            },
+            {
+              "name": "title",
+              "id": "er_products_attr_3",
+              "type": "VARCHAR(255)",
+              "isNullable": false
+            },
+            {
+              "name": "vendor",
+              "id": "er_products_attr_4",
+              "type": "VARCHAR(100)",
+              "isNullable": true
+            },
+            {
+              "name": "current_price",
+              "id": "er_products_attr_5",
+              "type": "NUMERIC",
+              "isNullable": false
+            },
+            {
+              "name": "last_updated",
+              "id": "er_products_attr_6",
+              "type": "TIMESTAMP",
+              "isNullable": false
+            }
+          ]
+        },
+        "label": "Products",
+        "position": {
+          "x": 620,
+          "y": 320
+        },
+        "nodeId": "er_products",
+        "properties": {
+          "description": "<p>Canonical product catalog storing identifiers, SKUs, titles, vendor metadata, and current price. Optimized for fast price lookups and joins with alert evaluation: index <code>id</code> and <code>sku</code>, consider materialized views for common queries, and keep recent price in a cache for low-latency alerts. Support denormalized fields for common filters and well-defined migration paths for schema changes.</p>",
+          "componentName": "Products"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_08",
+      "stepNumber": 8,
+      "type": "add_component",
+      "title": "Add entity: Products",
+      "content": "Products entity: canonical product records used by ingestion and alert evaluation."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "User-configured alerts referencing users and products.",
+        "componentType": "entity",
+        "data": {
+          "attributes": [
+            {
+              "name": "id",
+              "isPrimaryKey": true,
+              "id": "er_alerts_attr_1",
+              "type": "UUID",
+              "isNullable": false
+            },
+            {
+              "name": "user_id",
+              "id": "er_alerts_attr_2",
+              "type": "UUID",
+              "isForeignKey": true,
+              "isNullable": false
+            },
+            {
+              "name": "product_id",
+              "id": "er_alerts_attr_3",
+              "type": "UUID",
+              "isForeignKey": true,
+              "isNullable": false
+            },
+            {
+              "name": "threshold_price",
+              "id": "er_alerts_attr_4",
+              "type": "NUMERIC",
+              "isNullable": false
+            },
+            {
+              "name": "comparison",
+              "id": "er_alerts_attr_5",
+              "type": "VARCHAR(10)",
+              "isNullable": false
+            },
+            {
+              "name": "channel",
+              "id": "er_alerts_attr_6",
+              "type": "VARCHAR(32)",
+              "isNullable": false
+            },
+            {
+              "name": "created_at",
+              "id": "er_alerts_attr_7",
+              "type": "TIMESTAMP",
+              "isNullable": false
+            },
+            {
+              "name": "active",
+              "id": "er_alerts_attr_8",
+              "type": "BOOLEAN",
+              "isNullable": false
+            }
+          ]
+        },
+        "label": "Alerts",
+        "position": {
+          "x": 460,
+          "y": 400
+        },
+        "nodeId": "er_alerts",
+        "properties": {
+          "description": "<p>User-created alerts referencing users and products, including threshold criteria, comparison operators, channels, and lifecycle state. Designed for efficient evaluation by the Alert Service: index <code>product_id</code> and <code>user_id</code>, ensure referential integrity to Users and Products, and include deduplication metadata and backpressure controls. Define retention and archival policies for compliance and storage management.</p>",
+          "componentName": "Alerts"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_09",
+      "stepNumber": 9,
+      "type": "add_component",
+      "title": "Add entity: Alerts",
+      "content": "Alerts entity: maps user alerts to products and threshold criteria used by evaluation logic."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "Time-series price observations for products.",
+        "componentType": "entity",
+        "data": {
+          "attributes": [
+            {
+              "name": "id",
+              "isPrimaryKey": true,
+              "id": "er_ph_attr_1",
+              "type": "UUID",
+              "isNullable": false
+            },
+            {
+              "name": "product_id",
+              "id": "er_ph_attr_2",
+              "type": "UUID",
+              "isForeignKey": true,
+              "isNullable": false
+            },
+            {
+              "name": "timestamp",
+              "id": "er_ph_attr_3",
+              "type": "TIMESTAMP",
+              "isNullable": false
+            },
+            {
+              "name": "price",
+              "id": "er_ph_attr_4",
+              "type": "NUMERIC",
+              "isNullable": false
+            },
+            {
+              "name": "source",
+              "id": "er_ph_attr_5",
+              "type": "VARCHAR(128)",
+              "isNullable": true
+            }
+          ]
+        },
+        "label": "PriceHistory",
+        "position": {
+          "x": 620,
+          "y": 400
+        },
+        "nodeId": "er_price_history",
+        "properties": {
+          "description": "<p>Append-only time-series of observed product prices used for analytics, backfill, and trend analysis. Partition by product and time, compress older partitions, and provide efficient bulk ingest from the ingestion pipeline. Support replay for backtesting and integrity checks; retain high-resolution recent data and aggregate or downsample older data to control storage costs.</p>",
+          "componentName": "PriceHistory"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_10",
+      "stepNumber": 10,
+      "type": "add_component",
+      "title": "Add entity: PriceHistory",
+      "content": "PriceHistory entity: historical price observations for products used in analytics and alerts."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "component": {
+        "highlightReason": "Ingests price data from multiple sources and updates product catalog.",
+        "componentType": "backend-server",
+        "label": "Price Ingestion",
+        "position": {
+          "x": 80,
+          "y": 320
+        },
+        "nodeId": "price_ingest",
+        "properties": {
+          "description": "<p>Serverless background jobs or webhooks ingest price data from external sources and update the product catalog. Implements deduplication, validation, and error handling for incoming data. Logs all ingestion events for monitoring. Supports both scheduled polling and real-time webhooks for flexibility. <b>Auto-scaling and serverless architecture</b> ensure cost efficiency and seamless handling of variable loads.</p>",
+          "componentName": "Price Ingestion",
+          "_customProperties": [
+            {
+              "id": "price_ingest_serverless",
+              "label": "Serverless",
+              "type": "boolean",
+              "value": true,
+              "key": "serverless"
+            },
+            {
+              "id": "price_ingest_autoScaling",
+              "label": "Auto Scaling",
+              "type": "boolean",
+              "value": true,
+              "key": "autoScaling"
+            }
+          ],
+          "instances": 2,
+          "architecture": "batch"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_11",
+      "stepNumber": 11,
+      "type": "add_component",
+      "title": "Add the Price Ingestion Pipeline",
+      "content": "Supports polling, webhooks, and vendor feeds. Deduplicate and validate incoming price data. Serverless and auto-scaling design efficiently handles spikes in data volume."
+    },
+    {
+      "phase": "Phase 2: Data Model & Ingestion",
+      "connection": {
+        "description": "Ingestion pipeline writes new price data to the product catalog and price history tables.",
+        "edgeId": "edge_ingest_productdb",
+        "label": "Ingest → Product DB",
+        "targetNodeId": "product_db",
+        "connectionType": "database-connection",
+        "sourceNodeId": "price_ingest"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_12",
+      "stepNumber": 12,
+      "type": "add_connection",
+      "title": "Price Ingestion → Product Catalog DB (update prices)",
+      "content": "Batch and upsert price data for efficiency. Emit events for downstream alert evaluation."
+    },
+    {
+      "phase": "Phase 3: Price Monitoring & Polling",
+      "component": {
+        "highlightReason": "Cache recent price data for fast alert evaluation and UI queries.",
+        "componentType": "cache",
+        "label": "Price Cache (Redis)",
+        "position": {
+          "x": 300,
+          "y": 320
+        },
+        "nodeId": "price_cache",
+        "properties": {
+          "replication": true,
+          "_customProperties": [
+            {
+              "id": "price_cache_managedService",
+              "label": "Managed Service",
+              "type": "boolean",
+              "value": true,
+              "key": "managedService"
+            },
+            {
+              "id": "price_cache_queryOptimization",
+              "label": "Query Optimization",
+              "type": "boolean",
+              "value": true,
+              "key": "queryOptimization"
+            },
+            {
+              "id": "price_cache_encryptionAtRest",
+              "label": "Encryption At Rest",
+              "type": "boolean",
+              "value": true,
+              "key": "encryptionAtRest"
+            }
+          ],
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>Stores recent price data for products to accelerate alert evaluation and reduce DB load. Implements cache invalidation on new price ingestion and logs cache hits/misses for monitoring. Designed for high throughput and low latency to support real-time alerting. <b>Query optimization and encryption at rest</b> ensure security and performance. <b>Recommended to use a managed Redis service for cost efficiency and operational simplicity.</b></p>",
+          "componentName": "Price Cache (Redis)",
+          "ttl": 1800
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_13",
+      "stepNumber": 13,
+      "type": "add_component",
+      "title": "Add the Price Cache (Redis)",
+      "content": "Cache hot product prices and recent changes. Invalidate on new price ingestion. Query optimization and encryption at rest protect sensitive data and maximize performance."
+    },
+    {
+      "phase": "Phase 3: Price Monitoring & Polling",
+      "connection": {
+        "description": "Alert Service reads recent prices from cache before falling back to DB.",
+        "edgeId": "edge_alert_cache",
+        "label": "Alert Service → Cache",
+        "targetNodeId": "price_cache",
+        "connectionType": "data-flow",
+        "sourceNodeId": "alert_service"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_14",
+      "stepNumber": 14,
+      "type": "add_connection",
+      "title": "Alert Service → Price Cache (read prices)",
+      "content": "Read-through cache pattern: Alert Service checks cache for price before querying DB."
+    },
+    {
+      "phase": "Phase 3: Price Monitoring & Polling",
+      "connection": {
+        "description": "Alert Service queries product DB for price history and alert matching.",
+        "edgeId": "edge_alert_productdb",
+        "label": "Alert Service → Product DB",
+        "targetNodeId": "product_db",
+        "connectionType": "database-connection",
+        "sourceNodeId": "alert_service"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_15",
+      "stepNumber": 15,
+      "type": "add_connection",
+      "title": "Alert Service → Product Catalog DB (read prices)",
+      "content": "Efficient DB queries for price history and alert matching. Index on product_id and price."
+    },
+    {
+      "phase": "Phase 4: Alert Evaluation & Notification",
+      "component": {
+        "highlightReason": "Queue notifications for async delivery and rate limiting.",
+        "componentType": "message-broker",
+        "label": "Notification Queue (Kafka)",
+        "position": {
+          "x": 520,
+          "y": 320
+        },
+        "nodeId": "notif_queue",
+        "properties": {
+          "partitions": 8,
+          "replication": 2,
+          "description": "<p>Durable queue for notification events. Supports partitioning, retries, and decouples alert evaluation from delivery. Monitored for queue depth, lag, and error rates. Integrated with monitoring dashboards. Ensures reliable delivery and supports scaling for high notification volumes.</p>",
+          "componentName": "Notification Queue (Kafka)",
+          "retention": 72
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_16",
+      "stepNumber": 16,
+      "type": "add_component",
+      "title": "Add the Notification Queue (Kafka)",
+      "content": "Alert Service publishes notification events to the queue for async processing and delivery."
+    },
+    {
+      "phase": "Phase 4: Alert Evaluation & Notification",
+      "component": {
+        "highlightReason": "Processes notification events and sends messages to users.",
+        "componentType": "backend-server",
+        "label": "Notification Worker",
+        "position": {
+          "x": 80,
+          "y": 480
+        },
+        "nodeId": "notif_worker",
+        "properties": {
+          "description": "<p>Consumes notification events, applies rate limiting (via dedicated rate limiter), and sends messages via email, SMS, or push. Implements structured logging, distributed tracing, health checks, and circuit breaker patterns for downstream notification failures. Supports multi-channel delivery and logs all notification attempts for audit and troubleshooting. <b>Uses a local cache to reduce latency in message processing and improve throughput.</b> <b>Feature flags</b> enable safe rollout of new notification channels. Auto-scaling ensures high throughput and reliability.</p>",
+          "componentName": "Notification Worker",
+          "_customProperties": [
+            {
+              "id": "notif_worker_localCache",
+              "label": "Local Cache",
+              "type": "boolean",
+              "value": true,
+              "key": "localCache"
+            },
+            {
+              "id": "notif_worker_cacheType",
+              "label": "Cache Type",
+              "type": "text",
+              "value": "in-memory",
+              "key": "cacheType"
+            },
+            {
+              "id": "notif_worker_cachePurpose",
+              "label": "Cache Purpose",
+              "type": "text",
+              "value": "Reduce notification processing latency",
+              "key": "cachePurpose"
+            },
+            {
+              "id": "notif_worker_rateLimiter",
+              "label": "Rate Limiter",
+              "type": "boolean",
+              "value": true,
+              "key": "rateLimiter"
+            },
+            {
+              "id": "notif_worker_featureFlags",
+              "label": "Feature Flags",
+              "type": "boolean",
+              "value": true,
+              "key": "featureFlags"
+            },
+            {
+              "id": "notif_worker_healthChecks",
+              "label": "Health Checks",
+              "type": "boolean",
+              "value": true,
+              "key": "healthChecks"
+            },
+            {
+              "id": "notif_worker_circuitBreaker",
+              "label": "Circuit Breaker",
+              "type": "boolean",
+              "value": true,
+              "key": "circuitBreaker"
+            },
+            {
+              "id": "notif_worker_autoScaling",
+              "label": "Auto Scaling",
+              "type": "boolean",
+              "value": true,
+              "key": "autoScaling"
+            }
+          ],
+          "instances": 4,
+          "architecture": "worker"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_17",
+      "stepNumber": 17,
+      "type": "add_component",
+      "title": "Add the Notification Worker",
+      "content": "Supports multiple channels and rate limiting to avoid spam. Logs delivery status. Dedicated rate limiter prevents notification spam. Feature flags allow safe rollout of new notification features. Health checks and auto-scaling maximize reliability."
+    },
+    {
+      "phase": "Phase 4: Alert Evaluation & Notification",
+      "connection": {
+        "description": "Notification Worker consumes events from the queue and sends notifications.",
+        "edgeId": "edge_queue_worker",
+        "label": "Queue → Worker",
+        "targetNodeId": "notif_worker",
+        "connectionType": "message-queue",
+        "sourceNodeId": "notif_queue"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_18",
+      "stepNumber": 18,
+      "type": "add_connection",
+      "title": "Notification Queue → Notification Worker (deliver)",
+      "content": "Async delivery and retry logic. Supports exponential backoff and dead-letter queue for failures."
+    },
+    {
+      "phase": "Phase 4: Alert Evaluation & Notification",
+      "connection": {
+        "description": "Worker reports delivery status and errors to Alert Service for logging and user feedback.",
+        "edgeId": "edge_worker_alertsvc",
+        "label": "Worker → Alert Service",
+        "targetNodeId": "alert_service",
+        "connectionType": "http",
+        "sourceNodeId": "notif_worker"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_19",
+      "stepNumber": 19,
+      "type": "add_connection",
+      "title": "Notification Worker → Alert Service (status update)",
+      "content": "Track notification delivery, failures, and retries for user transparency."
+    },
+    {
+      "phase": "Phase 5: Scaling & Reliability",
+      "component": {
+        "highlightReason": "Store failed notifications for manual inspection and retry.",
+        "componentType": "queue",
+        "label": "Dead Letter Queue",
+        "position": {
+          "x": 300,
+          "y": 480
+        },
+        "nodeId": "dlq",
+        "properties": {
+          "maxSizeGB": 5,
+          "deadLetterQueue": true,
+          "encryption": true,
+          "description": "<p>Queue for failed notifications needing manual review. Supports requeue and alerting on high failure rates. Integrated with monitoring dashboards for alerting on DLQ growth. All messages are encrypted at rest. Provides operators with tools to inspect, fix, and requeue failed notifications efficiently.</p>",
+          "componentName": "Dead Letter Queue (DLQ)",
+          "type": "dead-letter",
+          "visibilityTimeout": 3600
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_20",
+      "stepNumber": 20,
+      "type": "add_component",
+      "title": "Add the Dead Letter Queue (DLQ)",
+      "content": "Operators can inspect, fix, and requeue failed notifications. All failed messages are encrypted at rest for security."
+    },
+    {
+      "phase": "Phase 5: Scaling & Reliability",
+      "component": {
+        "highlightReason": "Centralized observability for metrics, logs, and tracing.",
+        "componentType": "monitoring",
+        "label": "Monitoring Service",
+        "position": {
+          "x": 520,
+          "y": 480
+        },
+        "nodeId": "monitoring",
+        "properties": {
+          "description": "<p>Aggregates metrics, logs, and traces from all services. Provides distributed tracing for troubleshooting. Exposes dashboards for SLOs, error rates, and latency. Alerts on anomalies and integrates with all services for full observability. Supports alerting, anomaly detection, and root cause analysis. Enables proactive monitoring and rapid incident response. <b>Defines SLOs and SLIs for alert latency, notification delivery, and system uptime. SLOs: 99% of alerts processed within 1 minute, 99.9% notification delivery success, 99.99% system uptime; 99.5% Notification Worker delivery &lt; 30s; 99.9% API availability. SLIs: alert processing latency, notification delivery rate, error rates, system availability, notification worker latency, API availability.</b> <b>Custom alerts, workflow tracing, and detailed metrics</b> provide deep observability into all critical workflows.</p>",
+          "componentName": "Monitoring Service",
+          "_customProperties": [
+            {
+              "id": "monitoring_slos",
+              "label": "SLOs",
+              "type": "textarea",
+              "value": "99% alerts processed < 1 min, 99.9% notification delivery, 99.99% uptime; 99.5% Notification Worker delivery < 30s; 99.9% API availability",
+              "key": "slos"
+            },
+            {
+              "id": "monitoring_slis",
+              "label": "SLIs",
+              "type": "text",
+              "value": "alert_latency, notification_delivery_rate, error_rate, system_availability, notification_worker_latency, api_availability",
+              "key": "slis"
+            },
+            {
+              "id": "monitoring_customAlerts",
+              "label": "Custom Alerts",
+              "type": "boolean",
+              "value": true,
+              "key": "customAlerts"
+            },
+            {
+              "id": "monitoring_workflowTracing",
+              "label": "Workflow Tracing",
+              "type": "boolean",
+              "value": true,
+              "key": "workflowTracing"
+            },
+            {
+              "id": "monitoring_detailedMetrics",
+              "label": "Detailed Metrics",
+              "type": "boolean",
+              "value": true,
+              "key": "detailedMetrics"
+            }
+          ]
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_21",
+      "stepNumber": 21,
+      "type": "add_component",
+      "title": "Add the Monitoring Service (Prometheus/Grafana)",
+      "content": "Integrate all services with structured logging, distributed tracing, and metrics export. Use dashboards for SLOs, error rates, and latency. Custom alerts and workflow tracing provide deep observability into all critical workflows. Connects to all core services for metrics and log aggregation. Provides actionable insights for operators and supports automated alerting on SLO violations."
+    },
+    {
+      "phase": "Phase 5: Scaling & Reliability",
+      "component": {
+        "highlightReason": "Prevents Notification Worker from spamming users and enforces per-user/channel limits.",
+        "componentType": "rate-limiter",
+        "label": "Notification Rate Limiter",
+        "position": {
+          "x": 200,
+          "y": 520
+        },
+        "nodeId": "notif_rate_limiter",
+        "properties": {
+          "description": "<p>Dedicated rate limiter for Notification Worker. Enforces per-user, per-channel, and global notification limits. Integrates with monitoring for alerting on rate limit violations. Configurable thresholds and burst handling. Prevents abuse and ensures fair usage. <b>Protects users from notification spam and ensures system stability during spikes.</b></p>",
+          "componentName": "Notification Rate Limiter",
+          "_customProperties": [
+            {
+              "id": "notif_rate_limiter_limits",
+              "label": "Limits",
+              "type": "text",
+              "value": "100 notifications/hour/user; 1000/hour/global",
+              "key": "limits"
+            },
+            {
+              "id": "notif_rate_limiter_burstHandling",
+              "label": "Burst Handling",
+              "type": "boolean",
+              "value": true,
+              "key": "burstHandling"
+            }
+          ]
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_22",
+      "stepNumber": 22,
+      "type": "add_component",
+      "title": "Add the Notification Rate Limiter",
+      "content": "Ensures users are not spammed and system resources are protected from abuse. Integrates with monitoring for real-time alerting on rate limit violations."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Notification Worker consults the rate limiter to enforce per-user and global notification limits.",
+        "edgeId": "edge_worker_rate_limiter",
+        "label": "Worker → Rate Limiter",
+        "targetNodeId": "notif_rate_limiter",
+        "connectionType": "data-flow",
+        "sourceNodeId": "notif_worker"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_23",
+      "stepNumber": 23,
+      "type": "add_connection",
+      "title": "Notification Worker → Notification Rate Limiter (rate check)",
+      "content": "Enforce per-user and global notification rate limits before delivery."
+    },
+    {
+      "phase": "Phase 5: Scaling & Reliability",
+      "connection": {
+        "description": "Alert Service exports metrics, logs, and traces to the Monitoring Service for observability.",
+        "edgeId": "edge_alert_monitoring",
+        "label": "Alert Service → Monitoring",
+        "targetNodeId": "monitoring",
+        "connectionType": "data-flow",
+        "sourceNodeId": "alert_service"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_24",
+      "stepNumber": 24,
+      "type": "add_connection",
+      "title": "Alert Service → Monitoring Service (metrics/logs)",
+      "content": "Alert Service streams metrics, logs, and traces to the Monitoring Service for centralized observability, dashboards, and alerting."
+    },
+    {
+      "phase": "Phase 5: Scaling & Reliability",
+      "connection": {
+        "description": "Worker moves failed notifications to DLQ after max retries.",
+        "edgeId": "edge_worker_dlq",
+        "label": "Worker → DLQ",
+        "targetNodeId": "dlq",
+        "connectionType": "message-queue",
+        "sourceNodeId": "notif_worker"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_25",
+      "stepNumber": 25,
+      "type": "add_connection",
+      "title": "Notification Worker → DLQ (failed notifications)",
+      "content": "DLQ prevents repeated failures from blocking normal processing."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca86c_step_26",
+      "stepNumber": 26,
+      "type": "explanation",
+      "title": "Alert matching and notification trade-offs",
+      "content": "Designing an effective alert matching and notification system for a price alert platform involves navigating several key trade-offs. First, there is the choice between batch and real-time evaluation. Batch processing can be more cost-effective and easier to scale for low-priority or bulk alerts, but it introduces latency, which may not be acceptable for high-value or time-sensitive notifications. Real-time evaluation, on the other hand, ensures users are notified almost instantly when their alert conditions are met, but it requires more resources and careful engineering to maintain low latency and high throughput under heavy load.\n\nDeduplication is another critical concern. Without robust deduplication logic, users may receive multiple notifications for the same price drop, leading to notification fatigue and a poor user experience. Implementing deduplication requires tracking recent notifications, correlating them with alert triggers, and applying rules to suppress redundant messages.\n\nBalancing notification latency with system load is also essential. Spikes in price changes or user activity can overwhelm the system, causing delays or dropped notifications. To address this, the system should employ rate limiting, backpressure mechanisms, and circuit breaker patterns to gracefully degrade service under load and prevent cascading failures.\n\nFinally, integrating a service mesh can help manage traffic, enforce policies, and provide observability across microservices. This enables fine-grained control over alert evaluation and notification delivery, supporting both reliability and scalability."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca86c_step_27",
+      "stepNumber": 27,
+      "type": "explanation",
+      "title": "Scaling, caching, and rate limiting",
+      "content": "To ensure the Price Alert System can handle millions of users and alerts efficiently, several scaling, caching, and rate limiting strategies must be employed. Sharding alert evaluation by product or user is a foundational approach, allowing the workload to be distributed across multiple servers or processing nodes. This not only improves throughput but also isolates failures, so that issues affecting one shard do not impact the entire system.\n\nCaching hot prices—those that are frequently queried or updated—reduces the load on the primary database and accelerates alert evaluation. An in-memory cache like Redis can store recent price data, enabling rapid lookups and minimizing latency for both alert matching and user-facing queries. Cache invalidation strategies must be carefully designed to ensure data consistency, especially when new price data is ingested or when alerts are triggered.\n\nRate limiting is crucial for protecting the system from abuse and ensuring fair usage across all users and channels. By applying rate limits per user, per channel, or even per IP address, the system can prevent spam, avoid overloading notification channels, and maintain a high quality of service. Monitoring notification volume and alerting on spikes helps operators detect unusual activity or potential abuse early.\n\nFinally, optimizing the Product Catalog DB with connection pooling and query optimization techniques ensures that even under heavy load, the database remains responsive. Indexing, query tuning, and horizontal scaling of the database layer further contribute to the system’s overall scalability and reliability.\n\n<b>Edge Cases & Failure Handling:</b> Each component should document how it handles edge cases such as network partitions, database failover, cache invalidation failures, and message queue backpressure. For example, the Notification Worker should specify retry logic and fallback channels for undeliverable messages. The Alert Service should describe how it handles duplicate or conflicting alerts. The Monitoring Service should outline alerting thresholds for system anomalies and escalation procedures for persistent failures."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "id": "6901ef1b9420d83630aca86c_step_28",
+      "stepNumber": 28,
+      "type": "implementation",
+      "title": "MVP implementation plan",
+      "content": "Stage 1: Build Alert API + Service, wire Product DB and Price Ingestion, and support basic email notifications. Stage 2: Add cache and notification queue. Stage 3: Implement Notification Worker, DLQ, and multi-channel support. Stage 4: Add monitoring, rate limiting, and scale testing. Integrate structured logging, distributed tracing, and dashboards from the start."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "component": {
+        "highlightReason": "Manages user preferences, alert settings, and authentication integration.",
+        "componentType": "backend-server",
+        "label": "User Management Service",
+        "position": {
+          "x": 700,
+          "y": 160
+        },
+        "nodeId": "user_mgmt",
+        "properties": {
+          "description": "<p>Handles user registration, authentication integration, and management of user preferences and alert settings. Provides APIs for updating notification channels, alert thresholds, and privacy settings. Integrates with Alert API and Notification Worker for personalized experiences. Implements strong RBAC access controls and encryption for user data at rest. Health checks ensure service reliability. Centralizes all user-related data for maintainability and extensibility.</p>",
+          "componentName": "User Management Service",
+          "_customProperties": [
+            {
+              "id": "user_mgmt_encryptionAtRest",
+              "label": "Encryption At Rest",
+              "type": "boolean",
+              "value": true,
+              "key": "encryptionAtRest"
+            },
+            {
+              "id": "user_mgmt_rbac",
+              "label": "RBAC",
+              "type": "boolean",
+              "value": true,
+              "key": "rbac"
+            },
+            {
+              "id": "user_mgmt_healthChecks",
+              "label": "Health Checks",
+              "type": "boolean",
+              "value": true,
+              "key": "healthChecks"
+            },
+            {
+              "id": "user_mgmt_refreshTokenRotation",
+              "label": "Refresh Token Rotation",
+              "type": "boolean",
+              "value": true,
+              "key": "refreshTokenRotation"
+            },
+            {
+              "id": "user_mgmt_sessionSigningKeyRotation",
+              "label": "Session Signing Key Rotation",
+              "type": "boolean",
+              "value": true,
+              "key": "sessionSigningKeyRotation"
+            },
+            {
+              "id": "user_mgmt_secureCookie",
+              "label": "Secure Cookie",
+              "type": "boolean",
+              "value": true,
+              "key": "secureCookie"
+            }
+          ]
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_29",
+      "stepNumber": 29,
+      "type": "add_component",
+      "title": "Add the User Management Service",
+      "content": "Centralizes user profile, preferences, and alert settings management. RBAC and encryption at rest protect user data. Health checks maximize reliability. Supports future extensibility for advanced user features."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Alert API queries and updates user profile and notification preferences via User Management Service.",
+        "edgeId": "edge_api_user_mgmt",
+        "label": "API → User Mgmt",
+        "targetNodeId": "user_mgmt",
+        "connectionType": "api-call",
+        "sourceNodeId": "alert_api"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_30",
+      "stepNumber": 30,
+      "type": "add_connection",
+      "title": "Alert API → User Management Service (profile & prefs)",
+      "content": "User-facing API interacts with User Management Service for preferences and account operations."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "component": {
+        "highlightReason": "Dedicated cache for user sessions and authentication tokens to improve performance and security.",
+        "componentType": "cache",
+        "label": "User Session Cache (Redis)",
+        "position": {
+          "x": 900,
+          "y": 160
+        },
+        "nodeId": "user_session_cache",
+        "properties": {
+          "description": "<p>Stores user session data and authentication tokens for fast access and improved security. Reduces load on primary database and accelerates authentication/authorization checks. Implements TTL, encryption at rest, and access controls. Monitored for cache hits/misses and anomalies.</p>",
+          "componentName": "User Session Cache (Redis)",
+          "_customProperties": [
+            {
+              "id": "user_session_cache_encryptionAtRest",
+              "label": "Encryption At Rest",
+              "type": "boolean",
+              "value": true,
+              "key": "encryptionAtRest"
+            },
+            {
+              "id": "user_session_cache_accessControl",
+              "label": "Access Control",
+              "type": "boolean",
+              "value": true,
+              "key": "accessControl"
+            },
+            {
+              "id": "user_session_cache_managedService",
+              "label": "Managed Service",
+              "type": "boolean",
+              "value": true,
+              "key": "managedService"
+            },
+            {
+              "id": "user_session_cache_tokenEncryption",
+              "label": "Token Encryption",
+              "type": "boolean",
+              "value": true,
+              "key": "tokenEncryption"
+            },
+            {
+              "id": "user_session_cache_secureCookie",
+              "label": "Secure Cookie",
+              "type": "boolean",
+              "value": true,
+              "key": "secureCookie"
+            },
+            {
+              "id": "user_session_cache_httpOnly",
+              "label": "HttpOnly",
+              "type": "boolean",
+              "value": true,
+              "key": "httpOnly"
+            },
+            {
+              "id": "user_session_cache_rotationPolicy",
+              "label": "Rotation Policy",
+              "type": "text",
+              "value": "rotate-refresh-token",
+              "key": "rotationPolicy"
+            }
+          ],
+          "engine": "redis",
+          "ttl": 3600
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_31",
+      "stepNumber": 31,
+      "type": "add_component",
+      "title": "Add the User Session Cache (Redis)",
+      "content": "Accelerates user authentication and session validation. Enhances security by isolating session data from main DB."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Alert API reads user session tokens from the session cache for auth checks.",
+        "edgeId": "edge_api_sessioncache",
+        "label": "API → Session Cache",
+        "targetNodeId": "user_session_cache",
+        "connectionType": "data-flow",
+        "sourceNodeId": "alert_api"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_32",
+      "stepNumber": 32,
+      "type": "add_connection",
+      "title": "Alert API → User Session Cache (auth/session lookup)",
+      "content": "Use session cache to validate tokens and accelerate auth checks."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "component": {
+        "highlightReason": "Handles notification delivery when the primary Notification Worker fails, improving reliability.",
+        "componentType": "backend-server",
+        "label": "Fallback Notification Service",
+        "position": {
+          "x": 80,
+          "y": 600
+        },
+        "nodeId": "fallback_notif",
+        "properties": {
+          "description": "<p>Processes notifications that could not be delivered by the primary Notification Worker. Supports alternative channels, retry logic, and escalation policies. Monitored for fallback events and success rates. Integrates with DLQ for manual and automated reprocessing.</p>",
+          "componentName": "Fallback Notification Service",
+          "_customProperties": [
+            {
+              "id": "fallback_notif_alternativeChannels",
+              "label": "Alternative Channels",
+              "type": "boolean",
+              "value": true,
+              "key": "alternativeChannels"
+            },
+            {
+              "id": "fallback_notif_retryLogic",
+              "label": "Retry Logic",
+              "type": "boolean",
+              "value": true,
+              "key": "retryLogic"
+            },
+            {
+              "id": "fallback_notif_escalationPolicy",
+              "label": "Escalation Policy",
+              "type": "boolean",
+              "value": true,
+              "key": "escalationPolicy"
+            },
+            {
+              "id": "fallback_notif_monitoring",
+              "label": "Monitoring",
+              "type": "boolean",
+              "value": true,
+              "key": "monitoring"
+            }
+          ]
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_33",
+      "stepNumber": 33,
+      "type": "add_component",
+      "title": "Add the Fallback Notification Service",
+      "content": "Ensures users receive notifications even if the primary worker fails. Supports alternative delivery and escalation."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Fallback Notification Service processes messages when primary delivery fails.",
+        "edgeId": "edge_worker_fallback",
+        "label": "Worker → Fallback Notif",
+        "targetNodeId": "fallback_notif",
+        "connectionType": "message-queue",
+        "sourceNodeId": "notif_worker"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_34",
+      "stepNumber": 34,
+      "type": "add_connection",
+      "title": "Notification Worker → Fallback Notification Service (failover)",
+      "content": "Route failed or retried notifications to the fallback service for alternate delivery strategies."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "component": {
+        "highlightReason": "Provides mTLS, traffic control, and telemetry for service-to-service communication.",
+        "componentType": "service-mesh",
+        "label": "Service Mesh",
+        "position": {
+          "x": 520,
+          "y": 240
+        },
+        "nodeId": "service_mesh",
+        "properties": {
+          "description": "<p>Implements mTLS, traffic routing, circuit breaking, and distributed telemetry. Enhances security and observability for service-to-service communication and integrates with existing monitoring. Provides platform-level policies for retries, load balancing, and canary routing, reducing developer burden and centralizing operational controls. Enables consistent telemetry and tracing context propagation across services to improve incident response and performance analysis.</p>",
+          "componentName": "Service Mesh (Istio/Linkerd)",
+          "_customProperties": [
+            {
+              "id": "service_mesh_mTLS",
+              "label": "mTLS",
+              "type": "boolean",
+              "value": true,
+              "key": "mTLS"
+            },
+            {
+              "id": "service_mesh_trafficManagement",
+              "label": "Traffic Management",
+              "type": "boolean",
+              "value": true,
+              "key": "trafficManagement"
+            },
+            {
+              "id": "service_mesh_telemetry",
+              "label": "Telemetry",
+              "type": "boolean",
+              "value": true,
+              "key": "telemetry"
+            },
+            {
+              "id": "service_mesh_sidecar",
+              "label": "Sidecar",
+              "type": "boolean",
+              "value": true,
+              "key": "sidecar"
+            }
+          ]
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_35",
+      "stepNumber": 35,
+      "type": "add_component",
+      "title": "Add the Service Mesh (Istio/Linkerd)",
+      "content": "Enforces mTLS, provides fine-grained traffic control, retries, and distributed tracing for core services."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Alert Service communicates through the Service Mesh for mTLS, routing, and telemetry.",
+        "edgeId": "edge_alert_service_mesh",
+        "label": "Alert Service → Service Mesh",
+        "targetNodeId": "service_mesh",
+        "connectionType": "data-flow",
+        "sourceNodeId": "alert_service"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_36",
+      "stepNumber": 36,
+      "type": "add_connection",
+      "title": "Alert Service → Service Mesh (mTLS/telemetry)",
+      "content": "Integrate core services with the service mesh for secure, observable service-to-service communication."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "component": {
+        "highlightReason": "Edge caching for UI and static resources to reduce latency and backend load.",
+        "componentType": "cdn",
+        "label": "CDN (CloudFront/Cloudflare)",
+        "position": {
+          "x": 80,
+          "y": 80
+        },
+        "nodeId": "cdn",
+        "properties": {
+          "description": "<p>Edge caching for static assets (UI, images, JS), TLS termination, origin shielding, and geo-distribution. Reduces backend load and improves performance. Supports cache invalidation strategies, origin failover, and fine-grained caching rules per path or content-type. Integrates with CI for automated asset purging and provides security features like WAF and TLS termination to protect origin servers.</p>",
+          "componentName": "CDN",
+          "_customProperties": [
+            {
+              "id": "cdn_edgeCaching",
+              "label": "Edge Caching",
+              "type": "boolean",
+              "value": true,
+              "key": "edgeCaching"
+            },
+            {
+              "id": "cdn_tls",
+              "label": "TLS",
+              "type": "boolean",
+              "value": true,
+              "key": "tls"
+            },
+            {
+              "id": "cdn_geoDistribution",
+              "label": "Geo Distribution",
+              "type": "boolean",
+              "value": true,
+              "key": "geoDistribution"
+            },
+            {
+              "id": "cdn_originShield",
+              "label": "Origin Shield",
+              "type": "boolean",
+              "value": true,
+              "key": "originShield"
+            }
+          ]
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_37",
+      "stepNumber": 37,
+      "type": "add_component",
+      "title": "Add CDN for static assets",
+      "content": "Serve UI and static assets from the edge to reduce backend load and latency. Configure cache-control headers and long TTLs for static assets."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "CDN forwards requests to the Alert API origin for dynamic endpoints and API traffic.",
+        "edgeId": "edge_cdn_api",
+        "label": "CDN → Alert API",
+        "targetNodeId": "alert_api",
+        "connectionType": "http",
+        "sourceNodeId": "cdn"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_38",
+      "stepNumber": 38,
+      "type": "add_connection",
+      "title": "CDN → Alert API (edge → origin)",
+      "content": "Serve static assets from the edge and forward dynamic API requests to the origin API through the CDN."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "component": {
+        "highlightReason": "Edge filtering, OWASP protections, and DDoS mitigation for public endpoints.",
+        "componentType": "firewall",
+        "label": "Web Application Firewall (WAF)",
+        "position": {
+          "x": 160,
+          "y": 80
+        },
+        "nodeId": "waf",
+        "properties": {
+          "ipAllowlist": true,
+          "description": "<p>WAF provides rule-based filtering, managed rulesets, bot mitigation, and DDoS protections at the edge. Place the WAF between the CDN and origin/API to block common web attacks (OWASP top 10) and to apply custom IP allow/deny lists. Integrate WAF logs with the Monitoring Service to surface suspicious traffic patterns and automate alerts. Configure managed rulesets, rate-limiting policies, and request inspection to stop malicious requests before they reach backend services.</p>",
+          "componentName": "Web Application Firewall",
+          "_customProperties": [
+            {
+              "id": "waf_managedRules",
+              "label": "Managed Rules",
+              "type": "boolean",
+              "value": true,
+              "key": "managedRules"
+            },
+            {
+              "id": "waf_botProtection",
+              "label": "Bot Protection",
+              "type": "boolean",
+              "value": true,
+              "key": "botProtection"
+            }
+          ],
+          "type": "managed",
+          "ddosProtection": true
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_39",
+      "stepNumber": 39,
+      "type": "add_component",
+      "title": "Add the Web Application Firewall (WAF)",
+      "content": "Deploy a WAF at the edge to filter malicious requests and reduce attack surface. Integrate with the CDN and monitoring for automated blocking and alerting."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "WAF filters requests before they reach the Alert API to block malicious traffic and enforce rules.",
+        "edgeId": "edge_waf_api",
+        "label": "WAF → Alert API",
+        "targetNodeId": "alert_api",
+        "connectionType": "http",
+        "sourceNodeId": "waf"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_40",
+      "stepNumber": 40,
+      "type": "add_connection",
+      "title": "WAF → Alert API (edge protection)",
+      "content": "Protect the public API by filtering harmful requests at the edge via the WAF."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "component": {
+        "highlightReason": "Centralized feature flags, configuration versioning, and safe rollouts.",
+        "componentType": "configuration-service",
+        "label": "Configuration Service",
+        "position": {
+          "x": 360,
+          "y": 420
+        },
+        "nodeId": "config_service",
+        "properties": {
+          "versioning": true,
+          "_customProperties": [
+            {
+              "id": "config_provider",
+              "label": "Provider",
+              "type": "text",
+              "value": "LaunchDarkly / in-house",
+              "key": "provider"
+            }
+          ],
+          "encryption": true,
+          "auditLog": true,
+          "provider": "managed",
+          "description": "<p>Centralized configuration and feature-flag management enables safe rollouts, percentage-based experiments, and instant toggles across services. Provide versioning, encryption, and audit logs for configuration changes. Integrate with CI/CD pipelines to gate changes, and expose a stable API for other services to fetch runtime configuration and feature flag evaluations.</p>",
+          "componentName": "Configuration / Feature-Flag Service"
+        }
+      },
+      "id": "6901ef1b9420d83630aca86c_step_41",
+      "stepNumber": 41,
+      "type": "add_component",
+      "title": "Add the Configuration & Feature-Flag Service",
+      "content": "Use a centralized configuration service for feature flags and operational toggles to reduce risk during deployments and enable rapid rollback."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Alert Service queries the Configuration Service for feature flags and runtime configuration used during alert evaluation.",
+        "edgeId": "edge_config_alertsvc",
+        "label": "Config → Alert Service",
+        "targetNodeId": "alert_service",
+        "connectionType": "api-call",
+        "sourceNodeId": "config_service"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_42",
+      "stepNumber": 42,
+      "type": "add_connection",
+      "title": "Configuration Service → Alert Service (feature flags)",
+      "content": "Feature flags and runtime configuration allow gradual rollouts and safe experimentation for alert logic and notification behaviors."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Notification Worker retrieves runtime config and feature flags to decide delivery strategies and fallback behaviors.",
+        "edgeId": "edge_config_worker",
+        "label": "Config → Worker",
+        "targetNodeId": "notif_worker",
+        "connectionType": "api-call",
+        "sourceNodeId": "config_service"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_43",
+      "stepNumber": 43,
+      "type": "add_connection",
+      "title": "Configuration Service → Notification Worker (runtime flags)",
+      "content": "Runtime flags enable dynamic adjustments to delivery strategies without redeploying workers, improving operational agility."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Foreign-key relationship: alerts.user_id -> users.id",
+        "edgeId": "edge_er_alerts_users",
+        "label": "Alerts.user_id → Users.id",
+        "targetNodeId": "er_users",
+        "connectionType": "data-flow",
+        "sourceNodeId": "er_alerts"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_44",
+      "stepNumber": 44,
+      "type": "add_connection",
+      "title": "Alerts → Users (FK)",
+      "content": "Represents the foreign-key relationship from Alerts to Users."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Foreign-key relationship: alerts.product_id -> products.id",
+        "edgeId": "edge_er_alerts_products",
+        "label": "Alerts.product_id → Products.id",
+        "targetNodeId": "er_products",
+        "connectionType": "data-flow",
+        "sourceNodeId": "er_alerts"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_45",
+      "stepNumber": 45,
+      "type": "add_connection",
+      "title": "Alerts → Products (FK)",
+      "content": "Represents the foreign-key relationship from Alerts to Products."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Foreign-key relationship: priceHistory.product_id -> products.id",
+        "edgeId": "edge_er_pricehistory_products",
+        "label": "PriceHistory.product_id → Products.id",
+        "targetNodeId": "er_products",
+        "connectionType": "data-flow",
+        "sourceNodeId": "er_price_history"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_46",
+      "stepNumber": 46,
+      "type": "add_connection",
+      "title": "PriceHistory → Products (FK)",
+      "content": "Represents the foreign-key relationship from PriceHistory to Products."
+    },
+    {
+      "phase": "Phase 6: Implementation & Acceptance",
+      "connection": {
+        "description": "Products map to the Product Catalog DB schema and stored records.",
+        "edgeId": "edge_er_product",
+        "label": "Products → Product DB",
+        "targetNodeId": "product_db",
+        "connectionType": "data-flow",
+        "sourceNodeId": "er_products"
+      },
+      "id": "6901ef1b9420d83630aca86c_step_47",
+      "stepNumber": 47,
+      "type": "add_connection",
+      "title": "Products → Product Catalog DB (reference)",
+      "content": "Link the Products entity to the Product Catalog DB for schema reference and migrations."
+    }
+  ],
+  "totalSteps": 47,
+  "phases": [
+    {
+      "name": "Phase 1: Goals & API",
+      "description": "Clarify requirements, user flows, and notification triggers.",
+      "stepRange": [
+        1,
+        3
+      ]
+    },
+    {
+      "name": "Phase 2: Data Model & Ingestion",
+      "description": "Define alert schema, product catalog, and price history ingestion.",
+      "stepRange": [
+        4,
+        12
+      ]
+    },
+    {
+      "name": "Phase 3: Price Monitoring & Polling",
+      "description": "Design background jobs, polling/webhook strategies, and caching.",
+      "stepRange": [
+        13,
+        15
+      ]
+    },
+    {
+      "name": "Phase 4: Alert Evaluation & Notification",
+      "description": "Alert matching, deduplication, and notification delivery.",
+      "stepRange": [
+        16,
+        19
+      ]
+    },
+    {
+      "name": "Phase 5: Scaling & Reliability",
+      "description": "Sharding, rate limiting, observability, and operational concerns.",
+      "stepRange": [
+        20,
+        22
+      ]
+    },
+    {
+      "name": "Phase 6: Implementation & Acceptance",
+      "description": "MVP plan, acceptance tests, and operational readiness.",
+      "stepRange": [
+        23,
+        47
+      ]
+    }
+  ],
+  "problem_id": "6901ef1b9420d83630aca86c"
+}

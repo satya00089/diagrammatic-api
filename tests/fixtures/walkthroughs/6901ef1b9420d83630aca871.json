@@ -1,0 +1,691 @@
+{
+  "phases": [
+    {
+      "name": "Phase 1: Entry Point & Connection Interface",
+      "description": "Define how clients connect — both a REST API for CRUD operations and a WebSocket channel for real-time collaborative edits.",
+      "stepRange": [
+        1,
+        6
+      ]
+    },
+    {
+      "name": "Phase 2: Collaboration Core & Document Storage",
+      "description": "Design the OT engine that resolves concurrent edits, the Kafka broadcast layer, and the split between metadata storage and document content.",
+      "stepRange": [
+        7,
+        17
+      ]
+    },
+    {
+      "name": "Phase 3: Search, Session State & Version History",
+      "description": "Add Redis for active session buffers, Elasticsearch for full-text search, and a version diff store for rollback.",
+      "stepRange": [
+        18,
+        24
+      ]
+    },
+    {
+      "name": "Phase 4: Permissions, Caching & Observability",
+      "description": "Enforce sharing and permission rules, cache read-heavy published documents, and wire up monitoring for the collaboration pipeline.",
+      "stepRange": [
+        25,
+        34
+      ]
+    },
+    {
+      "name": "Phase 5: Hardening & Remediation",
+      "description": "Implement production hardening: HA, backup, encryption, caching, rate-limiting, CDN, observability enhancements.",
+      "stepRange": [
+        35,
+        41
+      ]
+    }
+  ],
+  "problem_id": "6901ef1b9420d83630aca871",
+  "version": "1.0",
+  "totalSteps": 41,
+  "steps": [
+    {
+      "phase": "Phase 1: Entry Point & Connection Interface",
+      "id": "app_001_step_01",
+      "stepNumber": 1,
+      "type": "explanation",
+      "title": "The Core Challenge: Concurrent Edits",
+      "content": "## What makes collaborative editing hard?\n\nWhen two people type into the same document simultaneously, you have a **distributed systems conflict problem**. There is no central clock. By the time User A's change reaches User B's browser, User B has already moved their cursor and added characters.\n\nTwo proven approaches exist:\n\n**Approach 1 — Operational Transformation (OT)**\nEvery keystroke is an _operation_ (e.g., `insert('H', pos=5)`, `delete(pos=7)`). The server transforms concurrent operations against each other so that applying them in any order produces the same final document. Google Docs uses OT. The complexity lives in the transformation functions.\n\n**Approach 2 — CRDT (Conflict-free Replicated Data Types)**\nAssign a unique, globally-sortable ID to each character. Deletions are logical tombstones. Reordering is always deterministic. No server needed for conflict resolution — peers can sync peer-to-peer. Yjs (used in Notion) and Automerge implement this. CRDTs have higher memory overhead but are simpler to reason about at scale.\n\n**Which to choose?** We will use **OT with a coordination server** — the canonical architecture for Google Docs-style products. It requires a single point of coordination per document session, but gives you precise control over transformation logic.\n\n**Key numbers to hold in mind:**\n- Target latency for seeing your own keystroke: < 50ms\n- Target latency for seeing a collaborator's keystroke: < 200ms\n- Concurrent editors per document (peak): ~50\n- Documents in system: millions\n- Daily active editors: hundreds of thousands"
+    },
+    {
+      "phase": "Phase 1: Entry Point & Connection Interface",
+      "id": "app_001_step_02",
+      "stepNumber": 2,
+      "type": "explanation",
+      "title": "Two APIs: REST for CRUD, WebSocket for Edits",
+      "content": "## Two distinct connection patterns\n\nThis system has two fundamentally different access patterns that need separate handling:\n\n**REST (HTTP/1.1 or HTTP/2)**\nUsed for everything that isn't real-time: creating/deleting documents, fetching document metadata, managing folder hierarchy, adjusting permissions, searching. REST is stateless, cacheable, and easy to scale horizontally.\n\n**WebSocket (ws:// or wss://)**\nUsed for the live editing session. Once a user opens a document, their client keeps a persistent WebSocket connection to the collaboration server. All keystrokes flow as operations over this channel. The server applies OT and fans out the transformed operations to every other connected client.\n\nThe critical constraint: **WebSocket connections are stateful**. A load balancer _must_ route all WebSocket connections for a given document to the same collaboration server instance (sticky sessions). Otherwise, the OT engine loses state and diverges.\n\nThis sticky session requirement shapes the load balancer configuration — our next step."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Connection Interface",
+      "component": {
+        "highlightReason": "Single entry point for all REST traffic. Validates JWT tokens before any request touches downstream services.",
+        "componentType": "api-gateway",
+        "label": "API Gateway",
+        "position": {
+          "x": 80,
+          "y": 200
+        },
+        "nodeId": "guided_api_gateway",
+        "properties": {
+          "throttling": true,
+          "rateLimiting": true,
+          "tlsTermination": true,
+          "description": "<p>Routes all REST API calls to downstream services. Handles OAuth 2.0 JWT validation, per-user rate limiting, and TLS termination.</p><p><strong>WebSocket pass-through:</strong> The gateway does not terminate WebSocket connections — it forwards the <code>Upgrade: websocket</code> header to the load balancer, which pins the connection to a specific collaboration server instance via sticky sessions.</p><p><strong>Timeout consideration:</strong> REST document fetches resolve in &lt;100ms. Bulk export endpoints may stream for minutes — those use chunked transfer encoding, not a standard request/response.</p>",
+          "componentName": "API Gateway",
+          "requestsPerSecond": 5000,
+          "inputValidation": true,
+          "deduplication": false,
+          "authentication": "OAuth 2.0"
+        }
+      },
+      "id": "app_001_step_03",
+      "stepNumber": 3,
+      "type": "add_component",
+      "title": "Add the API Gateway",
+      "content": "## API Gateway — REST Entry Point\n\nAll HTTP requests — create document, fetch metadata, list folders, share settings — enter through the API Gateway.\n\n**Authentication**: Every request carries a JWT issued after OAuth 2.0 login. The gateway validates the token signature and rejects unauthenticated calls before they reach downstream services.\n\n**Routing**: `/api/v1/documents/*` → Document Service; `/api/v1/search` → Search Service; `/api/v1/users/*` → Auth Service. WebSocket upgrades (`Upgrade: websocket`) are passed through to the load balancer without buffering.\n\n**Rate limiting**: Per-user limits prevent a script from hammering the document creation endpoint. Bulk export operations get a separate lower limit."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Connection Interface",
+      "id": "app_001_step_04",
+      "stepNumber": 4,
+      "type": "explanation",
+      "title": "Sticky Sessions — Why the Load Balancer is Critical",
+      "content": "## The sticky session requirement\n\nNormal load balancers distribute requests round-robin across servers. That works perfectly for stateless REST calls — any server can handle any request.\n\nWebSocket connections for OT are **stateful**. The collaboration server holds the in-memory OT document state: the current document snapshot, the queue of pending operations, and the list of connected clients. If a user's WebSocket is moved to a different server mid-session, that server has no context and the operation transforms will corrupt the document.\n\n**Solution: Sticky sessions (also called session affinity)**\n\nThe load balancer is configured to use the document ID as the affinity key. All WebSocket connections for document `doc_XYZ` always route to the same server instance. This is commonly done via:\n- A consistent hash on the document ID\n- A cookie-based approach (less reliable for WebSockets)\n- A dedicated document-to-server routing table in Redis\n\n**Failure scenario**: If the sticky server crashes, all connected clients disconnect and must reconnect. The new server reloads document state from the database, and clients resend their unacknowledged operations. This reconnect flow must be in the client SDK.\n\n**Implication for scaling**: You can't freely add collaboration servers. You should partition the document keyspace — a shard/range of document IDs owns a set of servers."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Connection Interface",
+      "component": {
+        "highlightReason": "Layer 7 LB applies ip-hash sticky sessions for WebSocket connections, routing all edits for a given document to one collaboration server.",
+        "componentType": "loadbalancer",
+        "label": "Load Balancer",
+        "position": {
+          "x": 300,
+          "y": 200
+        },
+        "nodeId": "guided_loadbalancer",
+        "properties": {
+          "multiAZ": true,
+          "ddosProtection": true,
+          "sslTermination": false,
+          "stickiness": true,
+          "description": "<p>Handles two traffic modes: round-robin for REST calls (stateless), and <strong>ip-hash sticky sessions</strong> for WebSocket connections (stateful OT).</p><p><strong>Why ip-hash:</strong> Hashing on the client IP (or ideally the document ID extracted from the WS upgrade URL) guarantees the same backend receives all operations for a given editing session — preventing OT state corruption.</p><p><strong>Connection draining:</strong> When a collaboration server is taken down for maintenance, the LB stops sending new connections immediately but waits for existing WebSocket sessions to close gracefully before removing the instance.</p>",
+          "type": "Layer 7 (Application)",
+          "healthCheckInterval": 10,
+          "healthCheck": true,
+          "accessLogs": true,
+          "componentName": "Load Balancer",
+          "waf": false,
+          "connectionDraining": true,
+          "algorithm": "ip-hash"
+        }
+      },
+      "id": "app_001_step_05",
+      "stepNumber": 5,
+      "type": "add_component",
+      "title": "Add the Load Balancer",
+      "content": "## Load Balancer — Sticky WebSocket Routing\n\nThis load balancer serves two traffic types simultaneously:\n\n1. **REST** (round-robin) — stateless document CRUD hits any backend\n2. **WebSocket** (ip-hash / affinity) — live editing session pinned to one collaboration server\n\nLayer 7 inspection allows the LB to look at the `Upgrade: websocket` header and apply the affinity rule only to WebSocket connections, leaving REST traffic on normal round-robin."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Connection Interface",
+      "connection": {
+        "description": "All client traffic passes through this edge. TLS was terminated at the API Gateway; downstream traffic uses plain HTTP. WebSocket upgrade headers trigger ip-hash sticky routing at the load balancer.",
+        "edgeId": "guided_edge_gw_lb",
+        "label": "REST + WebSocket Upgrade",
+        "targetNodeId": "guided_loadbalancer",
+        "connectionType": "http",
+        "sourceNodeId": "guided_api_gateway"
+      },
+      "id": "app_001_step_06",
+      "stepNumber": 6,
+      "type": "add_connection",
+      "title": "Connect API Gateway → Load Balancer",
+      "content": "## Wiring the Entry Path\n\nConnect the API Gateway to the Load Balancer. REST requests flow round-robin to backend services; WebSocket upgrade requests carry the `Upgrade: websocket` header so the load balancer can apply ip-hash affinity to pin live editing sessions to a single collaboration server instance.\n\n**What flows through this connection:**\n- All authenticated REST API calls (document CRUD, metadata, permissions, search)\n- WebSocket upgrade requests — the load balancer inspects the Upgrade header and applies ip-hash sticky routing automatically"
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "id": "app_001_step_07",
+      "stepNumber": 7,
+      "type": "explanation",
+      "title": "Inside the OT Engine",
+      "content": "## How the Operational Transformation server works\n\nThe OT collaboration server is the most complex component in this system. Here is its exact responsibility:\n\n**1. Maintain an in-memory document snapshot per open document**\nThe server holds the current authoritative document state as a rich-text data structure (e.g., Quill Delta, Slate.js, or ProseMirror node tree).\n\n**2. Receive operations from clients over WebSocket**\nEach operation carries: `{ type, position, content, clientVersion }`. The `clientVersion` tells the server what revision the client was on when they generated the operation.\n\n**3. Transform concurrent operations**\nIf client A sends `insert('A', pos=5, version=10)` and client B sent `insert('B', pos=5, version=10)` simultaneously, the server must apply one first and then transform the second against the first. The result: A's operation lands at pos=5, B's transformed operation lands at pos=6 (or vice versa — the key is both clients end up with the same document).\n\n**4. Broadcast the server-applied operation to all other clients**\nAfter applying and transforming, the server sends the canonical operation (with the new server revision) to all _other_ connected clients. Clients apply it against their local state.\n\n**5. Persist operations to the message broker**\nEvery applied operation is published to Kafka. This decouples the persistence write from the real-time path — the OT server doesn't wait for a DB write before sending the operation to other clients.\n\n**Session size concern**: Holding the full document state in memory for every open document is expensive. Documents inactive for more than 30 seconds should be evicted from the in-memory cache and reloaded from the database on next access."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "component": {
+        "highlightReason": "Stateful service that holds in-memory document state, applies OT transformations, and fans out confirmed operations to all connected editors.",
+        "componentType": "backend-server",
+        "label": "Collaboration Server (OT Engine)",
+        "position": {
+          "x": 500,
+          "y": 130
+        },
+        "nodeId": "guided_collab_server",
+        "properties": {
+          "instances": 8,
+          "description": "<p>Stateful service maintaining in-memory document state per open editing session. Runs OT transformation on concurrent operations and broadcasts the canonical result to all connected WebSocket clients.</p><p><strong>Stateful partitioning:</strong> Each server instance owns a shard of the document keyspace. The load balancer's ip-hash routing ensures all connections for a document hit the same instance, preserving OT state integrity.</p><p><strong>Session eviction:</strong> Documents with no active editors for 30+ seconds are evicted from memory. On the next open, state is reloaded from the database. This bounds memory consumption regardless of total document count.</p>",
+          "componentName": "Collaboration Server (OT Engine)",
+          "caching": true,
+          "bulkOps": false,
+          "retry": false,
+          "architecture": "Microservices"
+        }
+      },
+      "id": "app_001_step_08",
+      "stepNumber": 8,
+      "type": "add_component",
+      "title": "Add the Collaboration Server",
+      "content": "## Collaboration Server — The OT Engine\n\nThis is a stateful backend service. Each instance manages a subset of open document sessions (partitioned by document ID). It:\n\n- Accepts WebSocket connections from authenticated editors\n- Runs the OT transformation algorithm in memory\n- Broadcasts confirmed operations to all connected clients\n- Publishes each operation to Kafka for persistence and search indexing\n\nBecause it is stateful, horizontal scaling requires partitioning — not simple replication."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "connection": {
+        "description": "Persistent WebSocket connection pinned to one collaboration server instance via ip-hash routing on the document ID. All editors of the same document connect through the same server, preserving OT state integrity.",
+        "edgeId": "guided_edge_lb_collab",
+        "label": "WebSocket (ip-hash pinned)",
+        "targetNodeId": "guided_collab_server",
+        "connectionType": "http",
+        "sourceNodeId": "guided_loadbalancer"
+      },
+      "id": "app_001_step_09",
+      "stepNumber": 9,
+      "type": "add_connection",
+      "title": "Connect Load Balancer → Collaboration Server",
+      "content": "## WebSocket Pinned to the OT Engine\n\nWebSocket connections for live editing sessions are routed from the load balancer to a specific collaboration server instance, pinned via ip-hash on the document ID.\n\n**Why sticky routing is essential:** The collaboration server holds authoritative in-memory OT state — the document snapshot, pending operation queue, and list of connected clients for each open document. Routing to a different server mid-session would lose this context and corrupt the document."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "id": "app_001_step_10",
+      "stepNumber": 10,
+      "type": "explanation",
+      "title": "Broadcasting Operations with Kafka",
+      "content": "## Why Kafka and not a direct DB write?\n\nAfter the OT server applies an operation, it needs to:\n1. Send the operation to all other connected clients (done in-process, <1ms)\n2. **Persist** the operation to a durable store for version history\n3. **Index** updated content in Elasticsearch for search\n\nIf the OT server wrote directly to the database and Elasticsearch on every single keystroke, you'd be hitting storage systems ~50–100 times per second per active document. That is unsustainable.\n\n**Kafka decouples the real-time path from the persistence path:**\n- The OT server publishes one Kafka message per operation (<1ms). Done.\n- A **Document Writer** consumer reads from Kafka and batches operations into the database — writing a snapshot every N operations instead of every keystroke.\n- A **Search Indexer** consumer reads from the same topic and updates Elasticsearch asynchronously.\n\n**Topic design**: One Kafka topic `document-ops` partitioned by `document_id`. This ensures all operations for a given document are consumed in order by a single consumer instance — preserving the operation sequence for version history.\n\n**Retention**: Keep operations for 7 days. After that, only the periodic snapshots in object storage are needed for long-term history."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "component": {
+        "highlightReason": "Decouples the real-time OT path from persistence. Every applied operation is published here; consumers write to DB and Elasticsearch independently.",
+        "componentType": "message-broker",
+        "label": "Operation Event Bus (Kafka)",
+        "position": {
+          "x": 500,
+          "y": 340
+        },
+        "nodeId": "guided_message_broker",
+        "properties": {
+          "partitions": 24,
+          "replication": 3,
+          "description": "<p>Receives one message per applied OT operation from the Collaboration Server. Consumers read downstream at their own pace — the Document Writer batches ops into snapshots; the Search Indexer updates Elasticsearch; the Version Service records diffs.</p><p><strong>Partitioning:</strong> Partitioned by <code>document_id</code> so all ops for a single document are consumed in order by one consumer instance, preserving the document's revision sequence.</p><p><strong>Retention set to 7 days:</strong> Beyond 7 days, reconstructing history uses periodic snapshots from object storage rather than replaying every individual keystroke.</p>",
+          "durable": true,
+          "componentName": "Operation Event Bus (Kafka)",
+          "retention": 168
+        }
+      },
+      "id": "app_001_step_11",
+      "stepNumber": 11,
+      "type": "add_component",
+      "title": "Add the Message Broker",
+      "content": "## Kafka — Operation Broadcast & Persistence Bus\n\nKafka is the backbone connecting the real-time OT engine to every downstream consumer: the version store writer, the search indexer, and any future integrations (activity feeds, webhooks, analytics).\n\nPartitioning by `document_id` ensures strict ordering per document without sacrificing throughput across documents."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "connection": {
+        "description": "One Kafka message per applied OT operation, partitioned by document_id to guarantee per-document ordering. Consumers read at their own pace without blocking the real-time editing path.",
+        "edgeId": "guided_edge_collab_kafka",
+        "label": "Publish Operations",
+        "targetNodeId": "guided_message_broker",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_collab_server"
+      },
+      "id": "app_001_step_12",
+      "stepNumber": 12,
+      "type": "add_connection",
+      "title": "Connect Collaboration Server → Operation Bus",
+      "content": "## Publishing Each Operation to Kafka\n\nAfter the OT server applies a transformation and broadcasts it to all connected clients, it publishes the canonical operation to Kafka as an asynchronous write.\n\n**Each Kafka message contains:** operation type and content, document ID (partition key for ordering), server revision number, and author user ID. Downstream consumers — Document Writer and Search Indexer — subscribe independently and process at their own pace without blocking the real-time editing path."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "id": "app_001_step_13",
+      "stepNumber": 13,
+      "type": "explanation",
+      "title": "Metadata vs Content — The Storage Split",
+      "content": "## Don't store document content in your relational database\n\nThis is the most common architectural mistake in document system design.\n\n**What goes in PostgreSQL (relational DB):**\n- Document metadata: `id`, `title`, `owner_id`, `created_at`, `updated_at`, `current_version_id`\n- Folder hierarchy: adjacency list or closure table for the workspace tree\n- Permissions: `(document_id, user_id, role)` rows — owner, editor, commenter, viewer\n- Version pointers: `(document_id, version_number, snapshot_s3_key, created_at)`\n- User accounts, workspace memberships\n\n**What does NOT go in PostgreSQL:**\n- The actual document content (rich text, JSON node trees)\n- Binary attachments (images, PDFs embedded in documents)\n- Historical snapshots (one per N operations)\n\n**Why not?** PostgreSQL row size limits are ~1GB but performance degrades sharply for BLOBs above a few MB. More importantly, document reads become table scans when you fetch the content as a blob column alongside the metadata — they should be fetched separately and can be heavily CDN-cached.\n\n**What goes in Object Storage (S3-compatible):**\n- Document content snapshots as JSON blobs — `docs/{doc_id}/snapshot_{version}.json`\n- Attached images and file uploads\n- Exported PDFs\n\nThe database stores the _key_ (S3 path) pointing to the content. Fetching a document is two steps: DB for metadata + permissions check, then S3 for content."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "component": {
+        "highlightReason": "Stores document metadata, folder hierarchy, permissions, and version pointers. Content blobs are in object storage — only the S3 key lives here.",
+        "componentType": "database",
+        "label": "Metadata Store (PostgreSQL)",
+        "position": {
+          "x": 800,
+          "y": 130
+        },
+        "nodeId": "guided_database",
+        "properties": {
+          "replication": 3,
+          "replicationMode": "Async",
+          "pitr": true,
+          "wal": true,
+          "multiAZ": true,
+          "auditLog": true,
+          "crossRegion": false,
+          "rbac": true,
+          "description": "<p>Authoritative store for document metadata, folder structure, user permissions, and version manifest. Does <strong>not</strong> store document content — only the S3 object key pointing to the content snapshot.</p><p><strong>Folder hierarchy:</strong> Closure table pattern — a separate <code>folder_ancestors</code> table records every (ancestor, descendant) pair, enabling O(1) subtree queries and permission inheritance traversal.</p><p><strong>Permission rows:</strong> <code>(document_id, principal_id, role)</code> — role is one of <code>owner | editor | commenter | viewer</code>. Workspace-level permissions cascade down via the hierarchy.</p>",
+          "workload": "OLTP",
+          "connectionPooling": true,
+          "type": "RDBMS",
+          "sharding": "Hash-based",
+          "shards": 4,
+          "encryption": true,
+          "engine": "postgresql",
+          "componentName": "Metadata Store (PostgreSQL)",
+          "queryCache": true,
+          "storageGB": 200,
+          "backups": true
+        }
+      },
+      "id": "app_001_step_14",
+      "stepNumber": 14,
+      "type": "add_component",
+      "title": "Add the Database",
+      "content": "## PostgreSQL — Metadata, Hierarchy & Permissions\n\nPostgreSQL is the source of truth for everything _about_ documents but not the document content itself.\n\nKey design decisions:\n- **Closure table** for folder hierarchy (O(1) subtree queries vs adjacency list)\n- **RBAC rows** for sharing: one row per `(doc, user, role)` — simple, auditable\n- **Multi-AZ** with async replication — document metadata must survive an AZ failure"
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "connection": {
+        "description": "The Document Writer Kafka consumer batches operations and persists snapshot metadata to PostgreSQL. Runs asynchronously from the real-time editing path at Kafka consumer pace.",
+        "edgeId": "guided_edge_kafka_db",
+        "label": "Document Writer Consumer",
+        "targetNodeId": "guided_database",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_message_broker"
+      },
+      "id": "app_001_step_15",
+      "stepNumber": 15,
+      "type": "add_connection",
+      "title": "Connect Kafka → Metadata Store (Document Writer)",
+      "content": "## Document Writer Consumer — Persisting to PostgreSQL\n\nThe Document Writer Kafka consumer bridges the real-time operation stream to durable storage. Every 50 operations it:\n1. Constructs a full document snapshot from the previous snapshot + 50 new ops\n2. Writes the snapshot JSON to S3\n3. Inserts a new `(doc_id, version_number, s3_key, created_at)` row in PostgreSQL\n\nWithout this consumer, operations exist only in Kafka for 7 days with no permanent version history."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "id": "app_001_step_16",
+      "stepNumber": 16,
+      "type": "explanation",
+      "title": "Object Storage for Document Content & Snapshots",
+      "content": "## What gets stored where in S3\n\n**Document content snapshots**\n\nThe Document Writer Kafka consumer reads batches of 50 operations and periodically writes a full document snapshot to S3:\n``\ndocs/{workspace_id}/{doc_id}/snapshot_v{version}.json\n```\nThe PostgreSQL `document_versions` table records: `(doc_id, version_number, s3_key, created_at, created_by)`. Fetching a document means: look up the latest snapshot key in Postgres, then GET the JSON from S3.\n\n**Why periodic snapshots instead of applying diffs on read?**\n\nReplaying 50,000 individual operations to reconstruct a document every time someone opens it is O(n) in version count. A snapshot every 50 operations means at most 50 operations to replay on top of the nearest snapshot — effectively O(1).\n\n**Version rollback flow**:\n1. Find the snapshot at the target version from the Postgres manifest\n2. Download that snapshot from S3\n3. Apply any operations between the snapshot and the target version\n4. Write a new HEAD snapshot\n\n**Attachments**: Images and files dragged into the editor upload directly to S3 via a presigned URL. The document content references the S3 key — the OT server never touches binary data.\n\n**Storage estimate**: Average document is ~50KB as JSON. 10M documents × 10 versions average × 50KB = 5TB. S3 Standard is the right tier — access patterns are random and not archival."
+    },
+    {
+      "phase": "Phase 2: Collaboration Core & Document Storage",
+      "component": {
+        "highlightReason": "Stores full document content snapshots as JSON and all binary attachments. Postgres holds only the S3 key — never the content itself.",
+        "componentType": "file-storage",
+        "label": "Document Object Store (S3)",
+        "position": {
+          "x": 800,
+          "y": 380
+        },
+        "nodeId": "guided_file_storage",
+        "properties": {
+          "storageTB": 5,
+          "description": "<p>S3-compatible object store for document content snapshots (<code>snapshot_v{n}.json</code>) and binary attachments. Decouples large payload storage from the relational database.</p><p><strong>Snapshot cadence:</strong> One snapshot per 50 applied operations, written by the Document Writer Kafka consumer. At most 50 ops need replaying to reach an arbitrary revision — bounded O(1) reconstruction.</p><p><strong>Presigned uploads:</strong> Clients receive a short-lived presigned PUT URL to upload attachments directly. The backend never proxies binary data, keeping the API tier thin.</p>",
+          "componentName": "Document Object Store (S3)",
+          "throughput": 500,
+          "type": "EFS"
+        }
+      },
+      "id": "app_001_step_17",
+      "stepNumber": 17,
+      "type": "add_component",
+      "title": "Add File Storage",
+      "content": "## Object Storage — Document Snapshots & Attachments\n\nAll document content and binary attachments live here. PostgreSQL stores only the key (path) that points to each object.\n\nPresigned URL uploads let clients send files directly to S3 — the application server is never a proxy for binary data."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "connection": {
+        "description": "Document Writer consumer reads operations from Kafka and writes periodic JSON snapshots to the object store (S3).",
+        "edgeId": "guided_edge_docwriter_s3",
+        "label": "Write Snapshots",
+        "targetNodeId": "guided_file_storage",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_message_broker"
+      },
+      "id": "app_001_step_31",
+      "stepNumber": 31,
+      "type": "add_connection",
+      "title": "Connect Document Writer → Object Store (S3)",
+      "content": "## Document Writer writes periodic snapshots to the object store\n\nThe Document Writer Kafka consumer assembles batches of operations and writes full document snapshots to the object store. This connection represents the async snapshot write path to S3."
+    },
+    {
+      "phase": "Phase 3: Search, Session State & Version History",
+      "id": "app_001_step_18",
+      "stepNumber": 18,
+      "type": "explanation",
+      "title": "Redis — Three Roles in One System",
+      "content": "## Why Redis appears three times in this design\n\nRedis is a multi-role component here. Each role uses a separate Redis logical database or cluster to avoid eviction policy conflicts:\n\n**Role 1 — Active document session cache**\nWhen the Collaboration Server loads a document from S3 and Postgres, it stores a serialized version of the in-memory OT state in Redis with a 60-second TTL expiry. If the collaboration server crashes and restarts, it reloads from Redis first (warm restart in <50ms) before falling back to Postgres + S3 (cold restart in ~500ms). This dramatically reduces reconnect latency for editors after a server restart.\n\n**Role 2 — Cursor presence and user activity**\nEach connected editor's cursor position, selection range, and active status is written to Redis Pub/Sub. All collaboration servers for a workspace subscribe and forward presence updates to their connected WebSocket clients. This gives you the \"User X is typing\" and colored cursor features seen in Google Docs.\n\n**Role 3 — Operation buffer before batching**\nThe Document Writer consumer batches 50 operations before writing a snapshot. Redis stores the in-progress batch as a sorted set keyed by `(doc_id, sequence_number)`. This eliminates the need for a separate batch accumulation queue.\n\n**Note**: Role 1 and Role 2 use `volatile-lru` eviction — session data is reconstructable. Role 3 must use `noeviction` — losing unwritten operations would corrupt version history."
+    },
+    {
+      "phase": "Phase 3: Search, Session State & Version History",
+      "component": {
+        "highlightReason": "Stores active OT session state for warm restarts, cursor presence via Pub/Sub, and the pending operation buffer for snapshot batching.",
+        "componentType": "cache",
+        "label": "Collaboration Session Cache (Redis)",
+        "position": {
+          "x": 700,
+          "y": 560
+        },
+        "nodeId": "guided_cache_session",
+        "properties": {
+          "replication": true,
+          "eviction": "volatile-lru",
+          "encryption": true,
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>Multi-role Redis cache serving the collaboration layer:</p><ul><li><strong>Session state (TTL 60s):</strong> Serialized OT document state per open session — enables sub-50ms warm restart after a server crash instead of a 500ms cold load from Postgres + S3.</li><li><strong>Presence Pub/Sub:</strong> Cursor positions and typing indicators broadcast across collaboration server shards via Redis Pub/Sub channels.</li><li><strong>Op buffer (sorted set):</strong> Accumulates operations until a snapshot batch of 50 is ready to write. Keyed by <code>(doc_id, sequence_number)</code>.</li></ul><p><strong>Eviction:</strong> Session data uses <code>volatile-lru</code>; the op buffer key must be protected with <code>noeviction</code> to prevent data loss.</p>",
+          "cacheStrategy": "cache-aside",
+          "persistence": true,
+          "maxMemoryGB": 16,
+          "componentName": "Collaboration Session Cache (Redis)",
+          "ttl": 60,
+          "clusterMode": true
+        }
+      },
+      "id": "app_001_step_19",
+      "stepNumber": 19,
+      "type": "add_component",
+      "title": "Add the Session Cache",
+      "content": "## Redis — Session State, Presence & Op Buffer\n\nThis Redis instance serves the collaboration server cluster: warm session restarts, real-time presence broadcasting via Pub/Sub, and the in-flight operation buffer for snapshot batching."
+    },
+    {
+      "phase": "Phase 3: Search, Session State & Version History",
+      "connection": {
+        "description": "Bidirectional: the collaboration server writes OT state snapshots for crash recovery, and publishes/subscribes to cursor presence events via Redis Pub/Sub for real-time typing indicator broadcasting across shards.",
+        "edgeId": "guided_edge_collab_session",
+        "label": "Session State + Presence Pub/Sub",
+        "targetNodeId": "guided_cache_session",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_collab_server"
+      },
+      "id": "app_001_step_20",
+      "stepNumber": 20,
+      "type": "add_connection",
+      "title": "Connect Collaboration Server → Session Cache",
+      "content": "## Wiring Session State and Presence to Redis\n\nThe collaboration server maintains two live flows to Redis:\n\n1. **Session state**: On document load, writes a serialized OT snapshot to Redis (TTL 60s). On restart, reads this key before falling back to Postgres + S3 — warm restart in <50ms vs cold load at ~500ms.\n\n2. **Presence Pub/Sub**: Cursor positions and typing indicators are published to a Redis Pub/Sub channel per workspace. All collaboration server shards subscribe and forward presence events to their WebSocket clients, enabling cross-shard 'User X is typing' visibility."
+    },
+    {
+      "phase": "Phase 3: Search, Session State & Version History",
+      "id": "app_001_step_21",
+      "stepNumber": 21,
+      "type": "explanation",
+      "title": "Full-Text Search Architecture",
+      "content": "## Searching across millions of documents\n\nSQL `LIKE '%query%'` on a documents table with millions of rows is a full table scan — unusable at scale. You need a dedicated inverted index.\n\n**Elasticsearch index design**\n\nEach document is indexed as:\n```json\n{\n  \"doc_id\": \"...\",\n  \"workspace_id\": \"...\",\n  \"title\": \"...\",\n  \"content_text\": \"plain text extracted from snapshot\",\n  \"owner_id\": \"...\",\n  \"updated_at\": \"...\",\n  \"tags\": [...]\n}\n```\n`content_text` is extracted from the JSON snapshot at index time — you strip formatting and reduce the rich-text JSON to a plain string. This keeps the Elasticsearch document small (text only, no binary).\n\n**Indexing pipeline**\n\nThe Search Indexer Kafka consumer reads from the `document-ops` topic. After each snapshot is written to S3 (every 50 ops), it fetches the snapshot, extracts plain text, and calls the Elasticsearch index API. This means search results may lag real-time by ~5 seconds — acceptable for a search system.\n\n**Access control in search**\n\nThis is often forgotten. Search must respect document permissions. Two approaches:\n1. **Post-filter**: Fetch the top 100 results from Elasticsearch, then filter by permission check in the application layer. Simple but can return 0 results after filtering.\n2. **Index-time filtering**: Store `permitted_user_ids` or `permitted_workspace_ids` as a field and add it as a query filter. Performs better but requires re-indexing when permissions change.\n\nFor a first implementation, post-filter is fine. Add index-time permission fields when the permission change rate is high."
+    },
+    {
+      "phase": "Phase 3: Search, Session State & Version History",
+      "id": "app_001_step_22",
+      "stepNumber": 22,
+      "type": "explanation",
+      "title": "Version History: Snapshots + Diff Log",
+      "content": "## How version rollback works\n\n**Storage model (two-level)**\n\n1. **Snapshots** (in S3): Full document state at every 50th operation. Cheap to store, O(1) to reconstruct any version between two snapshots.\n2. **Operation log** (in PostgreSQL): Every individual operation with `(doc_id, seq, op_json, author_id, timestamp)`. Allows reconstructing any intermediate state down to the individual keystroke level.\n\n**Rollback UX**:\n- Show a timeline: the user picks a point in time\n- Find the nearest snapshot before that time from the version manifest\n- Apply ops from the operation log up to the target timestamp\n- Create a new snapshot at HEAD from the rolled-back state\n- The rollback itself is a new operation in the log (reversible)\n\n**Storage cost of the operation log**: 1KB per operation, 100 ops/min peak per document, 1M active documents = 100GB/day. After 7 days (matching Kafka retention), compact by writing a snapshot and dropping the individual ops. Old versions are accessible via S3 snapshots; intra-snapshot granularity is only kept for 7 days.\n\n**Important**: Version history requires the operation log to be append-only and never mutated. No `DELETE` or `UPDATE` on operation rows — soft deletes only."
+    },
+    {
+      "phase": "Phase 3: Search, Session State & Version History",
+      "component": {
+        "highlightReason": "Inverted-index search over document content. Updated asynchronously from Kafka — never in the real-time write path.",
+        "componentType": "search",
+        "label": "Document Search (Elasticsearch)",
+        "position": {
+          "x": 1050,
+          "y": 330
+        },
+        "nodeId": "guided_search",
+        "properties": {
+          "replication": 2,
+          "description": "<p>Full-text search over the <code>content_text</code> field extracted from document snapshots. Updated by the Search Indexer Kafka consumer — async from the real-time editing path, so search results lag by ~5 seconds.</p><p><strong>Permission enforcement:</strong> Post-filter on application layer for V1 — fetch top 100 Elasticsearch results, discard those the requesting user cannot access. Migrate to index-time <code>permitted_workspace_ids</code> field when permission-change frequency warrants it.</p><p><strong>5 primary shards:</strong> Distributes the index across nodes, allowing horizontal scaling as document count grows past 50M without re-indexing.</p>",
+          "fullText": true,
+          "shards": 5,
+          "componentName": "Document Search (Elasticsearch)",
+          "engine": "elasticsearch"
+        }
+      },
+      "id": "app_001_step_23",
+      "stepNumber": 23,
+      "type": "add_component",
+      "title": "Add Full-Text Search",
+      "content": "## Elasticsearch — Content Search\n\nAn Elasticsearch cluster indexes the plain-text content of every document, updated asynchronously by the Search Indexer Kafka consumer after each periodic snapshot.\n\nWith 5 primary shards and 2 replicas, the index can hold hundreds of millions of documents while serving sub-100ms search queries."
+    },
+    {
+      "phase": "Phase 3: Search, Session State & Version History",
+      "connection": {
+        "description": "The Search Indexer Kafka consumer re-indexes document plain text in Elasticsearch after each snapshot checkpoint. Async from the editing path — search results lag by ~5 seconds.",
+        "edgeId": "guided_edge_kafka_search",
+        "label": "Search Indexer Consumer",
+        "targetNodeId": "guided_search",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_message_broker"
+      },
+      "id": "app_001_step_24",
+      "stepNumber": 24,
+      "type": "add_connection",
+      "title": "Connect Kafka → Document Search (Search Indexer)",
+      "content": "## Search Indexer Consumer — Async Index Updates\n\nThe Search Indexer is a separate Kafka consumer that keeps Elasticsearch in sync with document changes. After every snapshot boundary (50 ops), it:\n1. Fetches the new snapshot JSON from S3\n2. Extracts the plain-text `content_text` field\n3. Calls the Elasticsearch Bulk API to update the index\n\n**Search lag:** Indexing happens at snapshot frequency, so search results lag real-time by ~5 seconds. This is acceptable — users do not expect search to reflect the last keystroke."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "id": "app_001_step_25",
+      "stepNumber": 25,
+      "type": "explanation",
+      "title": "Permission Model: Owner → Editor → Commenter → Viewer",
+      "content": "## Designing a sharing system that scales\n\n**Four permission levels** (matches Google Docs / Notion model):\n\n| Role | Can do |\n|------|--------|\n| Owner | Edit, share, delete, change permissions |\n| Editor | Edit content, add/remove collaborators |\n| Commenter | Add/resolve comments, cannot edit body |\n| Viewer | Read-only access |\n\n**Inheritance**: Permissions can be set at workspace, folder, or document level. A document inherits its parent folder's permissions unless overridden. This is the **closure table** in Postgres — traversing ancestors is O(1) with pre-computed ancestor rows.\n\n**Public links**: A document can have a public-link token (a random UUID, not tied to a user). Possessing the link grants viewer or commenter access. Stored as a row in the permissions table: `(doc_id, NULL user_id, viewer, link_token)`.\n\n**Revocation speed**: When a permission is changed or revoked, the Postgres update propagates immediately. The Auth Service caches permission lookups in Redis for 60 seconds — revoking a user's access takes at most 60 seconds to propagate without a cache bust. For sensitive scenarios (healthcare, legal), implement an active cache-bust webhook.\n\n**The Auth Service is called on every document open and every API request** — it must respond in <10ms. Redis caching of `(user_id, doc_id) → role` makes this feasible."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "component": {
+        "highlightReason": "Every document access triggers a permission check here. Redis session caching keeps latency under 10ms even at high concurrency.",
+        "componentType": "auth-service",
+        "label": "Auth & Permission Service",
+        "position": {
+          "x": 300,
+          "y": 500
+        },
+        "nodeId": "guided_auth_service",
+        "properties": {
+          "description": "<p>OAuth 2.0 identity provider and permission enforcement layer. Called by the API Gateway (via JWT validation) and by the Document Service (via explicit permission check) on every document open.</p><p><strong>Redis-backed session store:</strong> Permission lookups are cached as <code>(user_id, doc_id) → role</code> with a 60-second TTL. This keeps p99 latency under 10ms even with thousands of concurrent document opens.</p><p><strong>Public link tokens:</strong> Stored as bearer tokens in the permissions table. Possession of the token grants the associated role — no login required for viewer-level access.</p>",
+          "mfa": false,
+          "sessions": "redis",
+          "componentName": "Auth & Permission Service",
+          "oauth": true,
+          "tokenTTL": 60
+        }
+      },
+      "id": "app_001_step_26",
+      "stepNumber": 26,
+      "type": "add_component",
+      "title": "Add the Auth & Permission Service",
+      "content": "## Auth Service — Identity & Access Control\n\nHandles OAuth 2.0 login flows and is the single source of truth for permission checks. Every document open and API request calls this service to verify the requesting user's role.\n\nRedis session store means token lookups never hit PostgreSQL on the hot path."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "connection": {
+        "description": "API Gateway calls the Auth & Permission Service to validate tokens and fetch cached (user,document) permission roles.",
+        "edgeId": "guided_edge_gw_auth",
+        "label": "Auth Check",
+        "targetNodeId": "guided_auth_service",
+        "connectionType": "http",
+        "sourceNodeId": "guided_api_gateway"
+      },
+      "id": "app_001_step_32",
+      "stepNumber": 32,
+      "type": "add_connection",
+      "title": "Connect API Gateway → Auth & Permission Service",
+      "content": "## Auth check path\n\nAPI Gateway validates JWTs and delegates permission checks to the Auth & Permission Service. This connection shows the auth verification and session lookup path."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "id": "app_001_step_27",
+      "stepNumber": 27,
+      "type": "explanation",
+      "title": "Caching Read-Heavy Published Documents",
+      "content": "## The read/write asymmetry in document systems\n\nMost documents in a DMS are read far more often than they are written. A public Wikipedia-style article might receive 10,000 reads per day with 2 edits. A Notion team page is viewed 100× for every edit.\n\n**What can be cached?**\n\n- **Published/read-only documents**: If no active editing session exists, the rendered HTML or JSON snapshot can be cached in Redis for 5 minutes. 99% of reads are served from cache — zero Postgres queries, zero S3 fetches.\n- **Document metadata** (title, owner, last-modified): Cached for 60 seconds. Stale for a minute is acceptable for the sidebar document list.\n- **Search results**: Short-lived cache (30 seconds) on popular queries reduces Elasticsearch load.\n\n**What must NOT be cached?**\n\n- Permission lookups (or cache with very short TTL + active bust on revocation)\n- In-progress editing sessions — always authoritative from the OT engine\n\n**Cache invalidation**: When a new snapshot is published to S3, the Document Writer publishes a `doc.published` event to Kafka. A cache invalidation consumer subscribes and deletes the affected Redis key. Writes invalidate; reads populate."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "component": {
+        "highlightReason": "Caches rendered document snapshots for read-heavy inactive documents. 90%+ of read traffic served without touching Postgres or S3.",
+        "componentType": "cache",
+        "label": "Document Response Cache (Redis)",
+        "position": {
+          "x": 1050,
+          "y": 560
+        },
+        "nodeId": "guided_cache_response",
+        "properties": {
+          "replication": true,
+          "eviction": "lru",
+          "encryption": true,
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>Caches the full rendered document response (JSON snapshot) for documents not currently in an active editing session. Eliminates Postgres metadata queries and S3 content fetches for the majority of read traffic.</p><p><strong>Invalidation:</strong> The cache invalidation consumer listens on the Kafka <code>doc.published</code> topic and issues a Redis <code>DEL</code> on the affected key within ~1 second of a new snapshot being written. Cache misses fall back to Postgres + S3 and re-populate on next read.</p><p><strong>TTL fallback:</strong> Even without invalidation, a 5-minute TTL ensures stale reads self-heal. For collaborative documents under active edit, the key is never populated — clients always connect via WebSocket.</p>",
+          "cacheStrategy": "cache-aside",
+          "persistence": false,
+          "maxMemoryGB": 32,
+          "componentName": "Document Response Cache (Redis)",
+          "ttl": 300,
+          "clusterMode": false
+        }
+      },
+      "id": "app_001_step_28",
+      "stepNumber": 28,
+      "type": "add_component",
+      "title": "Add the Document Response Cache",
+      "content": "## Redis — Read Cache for Inactive Documents\n\nFor documents not in an active editing session, this cache serves the rendered JSON snapshot directly — bypassing Postgres and S3 entirely. Cache hit rate target: 90%+ for read-only traffic."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "connection": {
+        "description": "After snapshot publication, a consumer reads the Kafka event and issues a Redis DEL to invalidate the rendered document cache.",
+        "edgeId": "guided_edge_kafka_cache",
+        "label": "Cache Invalidation Events",
+        "targetNodeId": "guided_cache_response",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_message_broker"
+      },
+      "id": "app_001_step_33",
+      "stepNumber": 33,
+      "type": "add_connection",
+      "title": "Connect Kafka → Document Response Cache (Invalidation)",
+      "content": "## Cache invalidation path\n\nWhen the Document Writer publishes a new snapshot, a cache invalidation consumer deletes the Redis key for the affected document. This connection represents that event-driven invalidation flow."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "id": "app_001_step_29",
+      "stepNumber": 29,
+      "type": "explanation",
+      "title": "What to Monitor in a Collaborative System",
+      "content": "## Collaborative systems have unique failure modes\n\nStandard CPU/memory dashboards won't catch the most dangerous failures. You need metrics specific to the OT pipeline:\n\n**Collaboration server metrics**\n- `active_document_sessions` — how many documents are in memory right now\n- `ops_applied_per_second` — throughput of the OT engine; should correlate with active user count\n- `transform_latency_p99` — time to apply an OT transformation; >10ms suggests algorithmic regression\n- `websocket_disconnect_rate` — spike indicates network issues or server overload\n\n**Kafka lag metrics**\n- `consumer_lag.document_writer` — if this grows, snapshots are falling behind and version history is incomplete\n- `consumer_lag.search_indexer` — if this grows, search results are stale\n\n**Application metrics**\n- `document_open_p99_latency` — end-to-end time from click to first character visible\n- `collaborative_session_conflict_rate` — how often OT transformations produce a conflict that requires client resync\n- `search_query_p99` — Elasticsearch response time under load\n\n**Alert thresholds**:\n- Kafka consumer lag > 10,000 messages → PagerDuty\n- WebSocket disconnect rate > 500/minute → PagerDuty\n- OT transform latency p99 > 20ms → warning\n- Active document sessions > 80% of server capacity → autoscale trigger"
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "component": {
+        "highlightReason": "Tracks OT pipeline health: transform latency, WebSocket disconnect rate, Kafka consumer lag, and document session count.",
+        "componentType": "monitoring",
+        "label": "Monitoring (Prometheus + Grafana)",
+        "position": {
+          "x": 1050,
+          "y": 720
+        },
+        "nodeId": "guided_monitoring",
+        "properties": {
+          "alerts": true,
+          "description": "<p>Prometheus scrapes all services including custom OT metrics from the Collaboration Server: <code>ops_applied_per_second</code>, <code>transform_latency_p99</code>, <code>websocket_disconnect_rate</code>, and <code>active_document_sessions</code>.</p><p><strong>Kafka consumer lag alert:</strong> The Kafka consumer lag exporter feeds Prometheus. If the <code>document_writer</code> consumer lag exceeds 10,000 messages, PagerDuty fires — version history snapshots are falling behind and data loss risk is elevated.</p><p><strong>Grafana dashboards:</strong> (1) Collaboration health — session count, OT throughput, disconnect rate; (2) Search freshness — indexer lag, query latency; (3) Storage — S3 write rate, snapshot size growth.</p>",
+          "stack": "Prometheus + Grafana",
+          "componentName": "Monitoring (Prometheus + Grafana)",
+          "metrics": true,
+          "retention": 30
+        }
+      },
+      "id": "app_001_step_30",
+      "stepNumber": 30,
+      "type": "add_component",
+      "title": "Add Monitoring",
+      "content": "## Monitoring — OT Pipeline Observability\n\nPrometheus scrapes every service including the Collaboration Server's custom OT metrics, the Kafka consumer lag exporters, and all standard infrastructure metrics. Grafana dashboards surface the dashboards by concern: collaboration health, search freshness, and storage saturation."
+    },
+    {
+      "phase": "Phase 4: Permissions, Caching & Observability",
+      "connection": {
+        "description": "Prometheus scrapes the Collaboration Server's metrics endpoint; monitoring aggregates OT pipeline observability metrics.",
+        "edgeId": "guided_edge_collab_monitoring",
+        "label": "OT Metrics",
+        "targetNodeId": "guided_monitoring",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_collab_server"
+      },
+      "id": "app_001_step_34",
+      "stepNumber": 34,
+      "type": "add_connection",
+      "title": "Connect Collaboration Server → Monitoring",
+      "content": "## Metrics scraping\n\nPrometheus scrapes the Collaboration Server's /metrics endpoint and collects OT-specific metrics (ops_applied_per_second, transform_latency_p99, websocket_disconnect_rate)."
+    },
+    {
+      "phase": "Phase 5: Hardening & Remediation",
+      "id": "app_001_step_35",
+      "stepNumber": 35,
+      "type": "explanation",
+      "title": "PostgreSQL High Availability & Failover",
+      "content": "## PostgreSQL High Availability & Failover\n\nImplement a production HA strategy for PostgreSQL:\n\n- Option A: Managed RDS/Aurora with Multi-AZ and automated failover (recommended fast path).\n- Option B: Self-managed Patroni + etcd/consul with synchronous replicas and automated leader election.\n- Configure WAL archiving to S3 and enable PITR; test point-in-time restores regularly.\n- Define RPO/RTO targets and run failover drills monthly; automate failover runbooks and health checks."
+    },
+    {
+      "phase": "Phase 5: Hardening & Remediation",
+      "id": "app_001_step_36",
+      "stepNumber": 36,
+      "type": "explanation",
+      "title": "Backup & Disaster Recovery",
+      "content": "## Backup & Disaster Recovery\n\n- Define RTO/RPO for critical data and classify backups accordingly.\n- Enable daily cross-region snapshots and S3 replication for snapshots.\n- Automate restore tests (quarterly) and maintain runbooks for full-system recovery.\n- Ensure Kafka topic retention and durable storage for operation logs; plan for catastrophic restores from snapshots."
+    },
+    {
+      "phase": "Phase 5: Hardening & Remediation",
+      "id": "app_001_step_37",
+      "stepNumber": 37,
+      "type": "explanation",
+      "title": "Encryption at Rest & Key Management",
+      "content": "## Encryption at Rest & Key Management\n\n- Enable SSE-KMS for S3 and KMS-managed encryption for RDS/EBS.\n- Use envelope encryption for attachments and large blobs; rotate keys on schedule.\n- Use a central secrets manager (HashiCorp Vault or cloud KMS) and automate key rotation and access auditing.\n- Enforce mTLS between backend services for sensitive interactions."
+    },
+    {
+      "phase": "Phase 5: Hardening & Remediation",
+      "id": "app_001_step_38",
+      "stepNumber": 38,
+      "type": "explanation",
+      "title": "Redis Topology & Caching Optimization",
+      "content": "## Redis Topology & Caching Optimization\n\n- Separate Redis clusters by role: session cache, presence/pubsub, response cache, op buffer.\n- Use appropriate eviction policies per role: volatile-lru for session/presence; noeviction or persistent AOF for op buffers.\n- Enable Redis Cluster or sharding for scale; monitor keyspace and tune TTLs and warm caches for hot documents.\n- Add persistence for op buffers where data loss is unacceptable and test failover."
+    },
+    {
+      "phase": "Phase 5: Hardening & Remediation",
+      "id": "app_001_step_39",
+      "stepNumber": 39,
+      "type": "explanation",
+      "title": "API Gateway Rate-Limiting & Edge Protection",
+      "content": "## API Gateway Rate-Limiting & Edge Protection\n\n- Implement token-bucket per API key and per-IP rate limits at the gateway (Kong/NGINX/cloud gateway).\n- Add abuse detection and automated throttling for noisy clients.\n- Enable WAF rules and DDoS protection at edge; log and alert on throttling events.\n- Provide quotas and backoff guidance to clients."
+    },
+    {
+      "phase": "Phase 5: Hardening & Remediation",
+      "id": "app_001_step_40",
+      "stepNumber": 40,
+      "type": "explanation",
+      "title": "CDN for Static Assets",
+      "content": "## CDN for Static Assets\n\n- Serve static assets from S3 with a CDN (CloudFront/Cloudflare/Fastly) and add long Cache-Control headers with versioned filenames.\n- Monitor cache hit ratios and tune TTLs; invalidate programmatically at deploy time.\n- Offload large exports to pre-signed URLs and edge caching."
+    },
+    {
+      "phase": "Phase 5: Hardening & Remediation",
+      "id": "app_001_step_41",
+      "stepNumber": 41,
+      "type": "explanation",
+      "title": "Observability & SLOs",
+      "content": "## Observability & SLOs\n\n- Instrument services with OpenTelemetry and enable distributed tracing (Jaeger/Tempo).\n- Define SLIs and SLOs for end-to-end document open latency, edit latency, availability, and error-rate.\n- Add synthetic checks and runbooks; configure burn-rate alerting and on-call playbooks.\n- Ensure monitoring integrates with PagerDuty and includes runbook links in alerts."
+    }
+  ]
+}

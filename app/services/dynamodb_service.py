@@ -16,6 +16,7 @@ from app.models.auth_models import User
 from app.models.diagram_models import Diagram, Collaborator, Permission, PublicDiagramResponse
 from app.models.attempt_models import AttemptResponse, PublicSolutionResponse, LeaderboardEntry
 from app.models.feedback_models import FeedbackCreate, FeedbackResponse
+from app.models.problem_models import RequirementSpec
 
 settings = get_settings()
 
@@ -1063,12 +1064,66 @@ class DynamoDBService:
 
     # Problem attempt operations
     @staticmethod
+    def _normalize_attempt_assessment(
+        assessment: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Retain review content while making score/provenance semantics explicit."""
+        if not assessment:
+            return None
+        normalized = dict(assessment)
+        for camel, snake in (
+            ("score", "overall_score"),
+            ("assessmentId", "assessment_id"),
+            ("scoreAvailable", "score_available"),
+            ("rubricVersion", "rubric_version"),
+            ("requirementRevision", "requirement_revision"),
+            ("modelVersion", "model_version"),
+            ("inputFingerprint", "input_fingerprint"),
+        ):
+            if camel not in normalized and snake in normalized:
+                normalized[camel] = normalized[snake]
+
+        score = normalized.get("score")
+        valid_score = (
+            isinstance(score, (int, float, Decimal))
+            and not isinstance(score, bool)
+            and (not isinstance(score, Decimal) or score.is_finite())
+            and 0 <= score <= 100
+            and score == int(score)
+        )
+        source = normalized.get("source")
+        # Old AI results omitted source, but carried substantive review content.
+        # A bare number is not sufficient evidence of a completed AI review.
+        legacy_review = source in (None, "") and any(
+            normalized.get(field)
+            for field in (
+                "findings", "feedback", "scores", "summary",
+                "detailedAnalysis", "detailed_analysis",
+            )
+        )
+        available = (
+            valid_score
+            and (source == "ai" or legacy_review)
+            and normalized.get("scoreAvailable", True) is True
+            and normalized.get("score_available", True) is True
+            and normalized.get("verdict") != "unavailable"
+        )
+        normalized["scoreAvailable"] = bool(available)
+        normalized["score"] = int(score) if available else None
+        if "score_available" in normalized:
+            normalized["score_available"] = normalized["scoreAvailable"]
+        if "overall_score" in normalized:
+            normalized["overall_score"] = normalized["score"]
+        return normalized
+
+    @staticmethod
     def _prepare_attempt_state(
         existing_attempt: Optional[AttemptResponse],
         last_assessment: Optional[Dict[str, Any]],
         reasoning_context: Optional[Dict[str, Any]],
         interview_session: Optional[Dict[str, Any]],
         addressed_finding_ids: Optional[List[str]],
+        last_assessment_check: Optional[Dict[str, Any]] = None,
     ) -> tuple[
         int,
         Optional[Dict[str, Any]],
@@ -1077,6 +1132,7 @@ class DynamoDBService:
         Dict[str, Any],
         List[Dict[str, Any]],
         List[str],
+        Optional[Dict[str, Any]],
     ]:
         existing_data = (
             existing_attempt.model_dump() if existing_attempt is not None else {}
@@ -1100,25 +1156,62 @@ class DynamoDBService:
         else:
             preserved_interview_session = existing_data.get("interviewSession")
 
-        if last_assessment:
-            assessment_count += 1
-            preserved_assessment = convert_floats_to_decimal(last_assessment)
+        incoming_assessment = DynamoDBService._normalize_attempt_assessment(
+            last_assessment
+        )
+        incoming_check = DynamoDBService._normalize_attempt_assessment(
+            last_assessment_check
+        )
+        previous_assessment = DynamoDBService._normalize_attempt_assessment(
+            preserved_assessment
+        )
+        preserved_check = cast(
+            Optional[Dict[str, Any]], existing_data.get("lastAssessmentCheck")
+        )
+        original_check = DynamoDBService._normalize_attempt_assessment(preserved_check)
+        # Preserve legacy lastAssessment content on ordinary saves. New failed
+        # checks never displace a successful review, even when both are supplied.
+        new_reviews: List[Dict[str, Any]] = []
+        for review in (incoming_assessment, incoming_check):
+            if review is None:
+                continue
+            if review.get("scoreAvailable"):
+                if review != previous_assessment:
+                    assessment_count += 1
+                    new_reviews.append(review)
+                    preserved_check = review
+                elif preserved_check is None:
+                    preserved_check = review
+                preserved_assessment = review
+                previous_assessment = review
+            else:
+                if review != original_check and review not in new_reviews:
+                    new_reviews.append(review)
+                preserved_check = review
 
         preserved_addressed_finding_ids = list(
             addressed_finding_ids
             if addressed_finding_ids is not None
             else existing_data.get("addressedFindingIds", [])
         )
-        assessment_history = list(existing_data.get("assessmentHistory", []))
-        if last_assessment:
+        assessment_history = list(existing_data.get("assessmentHistory", []))[-10:]
+        for review in new_reviews:
             assessment_history.append(
                 {
-                    "id": str(last_assessment.get("assessmentId") or f"assessment-{assessment_count}"),
-                    "score": int(last_assessment.get("score", 0)),
-                    "findingCount": len(last_assessment.get("findings", []) or last_assessment.get("feedback", []) or []),
+                    "id": str(review.get("assessmentId") or uuid4()),
+                    "score": review["score"],
+                    "scoreAvailable": review["scoreAvailable"],
+                    "findingCount": len(review.get("findings", []) or review.get("feedback", []) or []),
                     "createdAt": datetime.now(timezone.utc).isoformat(),
-                    "source": last_assessment.get("source"),
+                    "source": review.get("source"),
                     "addressedFindingIds": preserved_addressed_finding_ids,
+                    **{
+                        field: review.get(field)
+                        for field in (
+                            "rubricVersion", "requirementRevision",
+                            "modelVersion", "inputFingerprint",
+                        )
+                    },
                 }
             )
             assessment_history = assessment_history[-10:]
@@ -1131,7 +1224,41 @@ class DynamoDBService:
             existing_data,
             assessment_history,
             preserved_addressed_finding_ids,
+            preserved_check,
         )
+
+    def _resolve_attempt_requirement_spec(
+        self,
+        problem_id: str,
+        existing_attempt: Optional[AttemptResponse],
+        supplied_spec: Optional[Dict[str, Any]],
+        assessment: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Pin known approved context without upgrading historical attempts."""
+        if existing_attempt and existing_attempt.problemRequirementSpec:
+            return existing_attempt.problemRequirementSpec.model_dump()
+        review = self._normalize_attempt_assessment(assessment)
+        if existing_attempt and (review is None or not review.get("scoreAvailable") or not review.get("requirementRevision")):
+            # New readers can send today's specification during autosave. That
+            # alone must never relabel a legacy attempt or its old review.
+            return None
+
+        problem = self.get_problem_by_id(problem_id)
+        if not problem or not problem.get("requirementSpec"):
+            # Local/custom problems remain usable, but client content must not
+            # masquerade as a server-approved catalog snapshot.
+            return None
+        approved = RequirementSpec.model_validate(
+            convert_decimal_to_float(problem["requirementSpec"])
+        )
+        if supplied_spec is not None:
+            supplied = RequirementSpec.model_validate(supplied_spec)
+            if supplied.revision != approved.revision:
+                raise ValueError("Problem requirement revision is not available")
+        if review and review.get("requirementRevision") not in (None, approved.revision):
+            # Never attach today's brief to an assessment of an older brief.
+            return None
+        return approved.model_dump()
 
     @staticmethod
     def _build_attempt_item(
@@ -1151,6 +1278,8 @@ class DynamoDBService:
         addressed_finding_ids: List[str],
         now: str,
         existing_attempt: Optional[AttemptResponse],
+        last_assessment_check: Optional[Dict[str, Any]],
+        problem_requirement_spec: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         item: Dict[str, Any] = {
             "userId": user_id,
@@ -1162,6 +1291,7 @@ class DynamoDBService:
             "edges": convert_floats_to_decimal(edges),
             "elapsedTime": elapsed_time,
             "lastAssessment": preserved_assessment,
+            "lastAssessmentCheck": last_assessment_check,
             "reasoningContext": preserved_reasoning_context,
             "interviewSession": preserved_interview_session,
             "assessmentCount": assessment_count,
@@ -1170,20 +1300,13 @@ class DynamoDBService:
             "updatedAt": now,
             "lastAttemptedAt": now,
         }
+        if problem_requirement_spec is not None:
+            item["problemRequirementSpec"] = problem_requirement_spec
 
         if existing_attempt is None:
             item["createdAt"] = now
         else:
             item["createdAt"] = existing_attempt.createdAt
-            item.update(
-                {
-                    "isPublic": existing_attempt.isPublic,
-                    "publishedAt": existing_attempt.publishedAt,
-                    "authorName": existing_attempt.authorName,
-                    "authorPicture": existing_attempt.authorPicture,
-                    "viewCount": existing_attempt.viewCount,
-                }
-            )
 
         return item
 
@@ -1218,6 +1341,8 @@ class DynamoDBService:
             edges=edges,
             elapsedTime=elapsed_time,
             lastAssessment=last_assessment,
+            lastAssessmentCheck=item.get("lastAssessmentCheck"),
+            problemRequirementSpec=item.get("problemRequirementSpec"),
             reasoningContext=reasoning_context,
             interviewSession=interview_session,
             assessmentCount=assessment_count,
@@ -1247,6 +1372,8 @@ class DynamoDBService:
         reasoning_context: Optional[Dict[str, Any]] = None,
         interview_session: Optional[Dict[str, Any]] = None,
         addressed_finding_ids: Optional[List[str]] = None,
+        last_assessment_check: Optional[Dict[str, Any]] = None,
+        problem_requirement_spec: Optional[Dict[str, Any]] = None,
     ) -> AttemptResponse:
         """Create or update a problem attempt (upsert operation)."""
         try:
@@ -1260,12 +1387,20 @@ class DynamoDBService:
                 existing_data,
                 assessment_history,
                 preserved_addressed_finding_ids,
+                preserved_check,
             ) = self._prepare_attempt_state(
                 existing_attempt,
                 last_assessment,
                 reasoning_context,
                 interview_session,
                 addressed_finding_ids,
+                last_assessment_check,
+            )
+            pinned_spec = self._resolve_attempt_requirement_spec(
+                problem_id,
+                existing_attempt,
+                problem_requirement_spec,
+                last_assessment_check or last_assessment,
             )
             item = self._build_attempt_item(
                 user_id,
@@ -1284,9 +1419,38 @@ class DynamoDBService:
                 preserved_addressed_finding_ids,
                 now,
                 existing_attempt,
+                preserved_check,
+                pinned_spec,
             )
 
-            self.attempts_table.put_item(Item=convert_floats_to_decimal(item))
+            # Update only attempt-owned attributes; put_item would erase fields
+            # written by other workflows, including concurrent sharing changes.
+            attributes = {
+                key: value for key, value in item.items()
+                if key not in ("userId", "problemId")
+            }
+            names = {f"#a{i}": key for i, key in enumerate(attributes)}
+            values = {
+                f":a{i}": convert_floats_to_decimal(value)
+                for i, value in enumerate(attributes.values())
+            }
+            updates = []
+            for i, key in enumerate(attributes):
+                value = f":a{i}"
+                if key in ("createdAt", "problemRequirementSpec"):
+                    value = f"if_not_exists(#a{i}, :a{i})"
+                updates.append(f"#a{i} = {value}")
+            saved = self.attempts_table.update_item(
+                Key={"userId": user_id, "problemId": problem_id},
+                UpdateExpression="SET " + ", ".join(updates),
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_NEW",
+            )
+            if saved.get("Attributes"):
+                saved_item = convert_decimal_to_float(saved["Attributes"])
+                saved_item["id"] = f"{user_id}#{problem_id}"
+                return AttemptResponse(**saved_item)
             response_reasoning_context = reasoning_context
             if response_reasoning_context is None:
                 response_reasoning_context = existing_data.get("reasoningContext")
@@ -1303,7 +1467,7 @@ class DynamoDBService:
                 nodes,
                 edges,
                 elapsed_time,
-                last_assessment,
+                convert_decimal_to_float(preserved_assessment),
                 response_reasoning_context,
                 response_interview_session,
                 assessment_count,
@@ -1381,6 +1545,20 @@ class DynamoDBService:
     # Public sharing
     # ------------------------------------------------------------------
 
+    @classmethod
+    def _qualifying_attempt_assessment(
+        cls, item: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        assessment = cls._normalize_attempt_assessment(item.get("lastAssessment"))
+        if not assessment or not assessment.get("scoreAvailable"):
+            return None
+        latest_check = cls._normalize_attempt_assessment(item.get("lastAssessmentCheck"))
+        if latest_check and not latest_check.get("scoreAvailable"):
+            # The retained review describes an earlier submission; an outage
+            # must not qualify the newly saved design as AI reviewed.
+            return None
+        return assessment
+
     def publish_attempt(
         self,
         user_id: str,
@@ -1393,8 +1571,13 @@ class DynamoDBService:
             existing = self.get_attempt_by_problem(user_id, problem_id)
             if not existing:
                 return None
+            if self._qualifying_attempt_assessment(existing.model_dump()) is None:
+                raise ValueError("A scored AI assessment is required to publish this attempt")
 
             now = datetime.now(timezone.utc).isoformat()
+            check_condition = "#check = :check"
+            if existing.lastAssessmentCheck is None:
+                check_condition = "(attribute_not_exists(#check) OR #check = :check)"
 
             self.attempts_table.update_item(
                 Key={"userId": user_id, "problemId": problem_id},
@@ -1403,12 +1586,21 @@ class DynamoDBService:
                     "authorName = :name, authorPicture = :pic, "
                     "viewCount = if_not_exists(viewCount, :zero)"
                 ),
+                ConditionExpression=(
+                    "attribute_exists(userId) AND attribute_exists(problemId) "
+                    "AND #assessment = :assessment AND " + check_condition
+                ),
+                ExpressionAttributeNames={
+                    "#assessment": "lastAssessment", "#check": "lastAssessmentCheck",
+                },
                 ExpressionAttributeValues={
                     ":pub": True,
                     ":ts": now,
                     ":name": author_name,
                     ":pic": author_picture or "",
                     DDB_ZERO_VALUE: 0,
+                    ":assessment": convert_floats_to_decimal(existing.lastAssessment),
+                    ":check": convert_floats_to_decimal(existing.lastAssessmentCheck),
                 },
             )
             return {"publishedAt": now}
@@ -1449,7 +1641,7 @@ class DynamoDBService:
             item_float: Dict[str, Any] = convert_decimal_to_float(item)
             attempt_id = f"{user_id}#{problem_id}"
 
-            assessment = item_float.get("lastAssessment")
+            assessment = self._normalize_attempt_assessment(item_float.get("lastAssessment"))
 
             return PublicSolutionResponse(
                 id=attempt_id,
@@ -1460,6 +1652,10 @@ class DynamoDBService:
                 nodes=item_float.get("nodes", []),
                 edges=item_float.get("edges", []),
                 lastAssessment=assessment,
+                lastAssessmentCheck=self._normalize_attempt_assessment(
+                    item_float.get("lastAssessmentCheck")
+                ),
+                problemRequirementSpec=item_float.get("problemRequirementSpec"),
                 authorName=item_float.get("authorName"),
                 authorPicture=item_float.get("authorPicture"),
                 publishedAt=item_float.get("publishedAt"),
@@ -1486,15 +1682,22 @@ class DynamoDBService:
                     ":t": True,
                 },
             )
-            items = response.get("Items", [])
+            items = list(response.get("Items", []))
+            while response.get("LastEvaluatedKey"):
+                response = self.attempts_table.scan(
+                    FilterExpression="problemId = :pid AND isPublic = :t",
+                    ExpressionAttributeValues={":pid": problem_id, ":t": True},
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
+                )
+                items.extend(response.get("Items", []))
 
             entries: List[LeaderboardEntry] = []
             for item in items:
                 item_float = convert_decimal_to_float(item)
-                assessment = cast(
-                    Dict[str, Any], item_float.get("lastAssessment") or {}
-                )
-                score = int(assessment.get("score", 0))
+                assessment = self._qualifying_attempt_assessment(item_float)
+                if assessment is None:
+                    continue
+                score = assessment["score"]
                 uid = item_float.get("userId", "")
                 pid = item_float.get("problemId", "")
                 entries.append(

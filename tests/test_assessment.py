@@ -3,15 +3,33 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models.request_models import AssessmentRequest, SystemComponent, ComponentType
 from app.services.ai_assessor import AIAssessorService
+from app.services.llm_port import MockLLMAdapter
+from app.routers.assessment import get_assessor_service, get_problem_lookup
+from app.utils.config import Settings
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def offline_assessment_dependencies(monkeypatch):
+    """Endpoint contract tests must not depend on live LLM or catalog access."""
+    monkeypatch.setattr("app.main.dynamodb_service.get_all_problems", lambda: [])
+    assessor = AIAssessorService(
+        llm=MockLLMAdapter(), settings=Settings.model_construct(langfuse_enabled=False)
+    )
+    previous = dict(app.dependency_overrides)
+    app.dependency_overrides[get_assessor_service] = lambda: assessor
+    app.dependency_overrides[get_problem_lookup] = lambda: lambda _: None
+    yield
+    app.dependency_overrides.clear()
+    app.dependency_overrides.update(previous)
 
 
 def test_health_endpoint():
     """Test the health check endpoint"""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    assert response.json() == {"status": "healthy", "database": "dynamodb"}
 
 
 def test_assessment_health_endpoint():
@@ -94,6 +112,8 @@ def test_ai_response_is_transformed_into_structured_findings():
     result = service._transform_ai_response(
         {
             "summary": "The request path is clear, but the database is a bottleneck.",
+            "verdict": "needs_revision",
+            "requirement_coverage": [],
             "scores": {
                 "scalability": 80,
                 "reliability": 70,
@@ -114,12 +134,19 @@ def test_ai_response_is_transformed_into_structured_findings():
                     "explanation": "All writes converge on one database instance.",
                     "recommendation": "Explain the replication and partitioning strategy.",
                     "severity": "important",
+                    "kind": "defect",
+                    "criterion": "scalability",
+                    "evidence_ids": ["database-1"],
+                    "requirement_ids": [],
                 },
                 {
                     "title": "Clear request flow",
                     "explanation": "The API path is explicit and easy to trace.",
                     "recommendation": None,
                     "severity": "positive",
+                    "kind": "strength",
+                    "evidence_ids": ["conn-1"],
+                    "requirement_ids": [],
                 },
             ],
             "feedback": [],
@@ -136,6 +163,8 @@ def test_ai_response_is_transformed_into_structured_findings():
     assert result.findings[0].severity == "important"
     assert result.findings[1].severity == "positive"
     assert result.overall_score == 74
+    assert result.score_available is True
+    assert result.is_valid is False
 
 
 def test_fallback_assessment_identifies_that_it_is_not_an_ai_review():
@@ -156,3 +185,7 @@ def test_fallback_assessment_identifies_that_it_is_not_an_ai_review():
     assert result.source == "rule_based"
     assert result.findings[0].severity == "important"
     assert "basic structural check" in (result.summary or "")
+    assert result.score_available is False
+    assert result.overall_score == 0
+    assert result.is_valid is False
+    assert result.verdict == "unavailable"

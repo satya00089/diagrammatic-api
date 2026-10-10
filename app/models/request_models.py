@@ -3,9 +3,10 @@
 from typing import List, Optional, Dict, Any
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.reasoning_models import InterviewSession, ReasoningContext
+from app.models.problem_models import RequirementSpec
 
 
 class ComponentType(str, Enum):
@@ -54,6 +55,9 @@ class Connection(BaseModel):
 class ProblemContext(BaseModel):
     """Model representing the system design problem context."""
 
+    id: Optional[str] = None
+    requirementRevision: Optional[str] = None
+    requirementSpec: Optional[RequirementSpec] = None
     title: str
     description: str
     requirements: Optional[str] = None
@@ -75,6 +79,15 @@ class AssessmentRequest(BaseModel):
     problem: Optional[ProblemContext] = None
     reasoningContext: Optional[ReasoningContext] = None
     interviewSession: Optional[InterviewSession] = None
+
+    @model_validator(mode="after")
+    def bound_assessment_input(self) -> "AssessmentRequest":
+        """Bound work before generating a prompt; do not truncate design evidence."""
+        if len(self.components) > 1000 or len(self.connections or []) > 5000:
+            raise ValueError("Assessment supports at most 1000 components and 5000 connections")
+        if len(self.model_dump_json().encode("utf-8")) > 512 * 1024:
+            raise ValueError("Assessment input exceeds 512 KiB; reduce annotations before reviewing")
+        return self
 
 
 class InterviewQuestionsRequest(BaseModel):

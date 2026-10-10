@@ -97,12 +97,15 @@ async def publish_attempt(
             detail="You can only publish your own solutions.",
         )
 
-    published = dynamodb_service.publish_attempt(
-        user_id=user_id,
-        problem_id=problem_id,
-        author_name=current_user.get("name") or current_user.get("email", "Anonymous"),
-        author_picture=current_user.get("picture"),
-    )
+    try:
+        published = dynamodb_service.publish_attempt(
+            user_id=user_id,
+            problem_id=problem_id,
+            author_name=current_user.get("name") or current_user.get("email", "Anonymous"),
+            author_picture=current_user.get("picture"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     if not published:
         raise HTTPException(

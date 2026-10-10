@@ -1,0 +1,581 @@
+{
+  "version": "1.0",
+  "steps": [
+    {
+      "phase": "Phase 1: Entry Point & Request Handling",
+      "id": "ai_001_step_01",
+      "stepNumber": 1,
+      "title": "Understanding the Core Challenge",
+      "type": "explanation",
+      "content": "## What makes LLM serving hard?\n\nLLM serving is fundamentally different from a typical web API. Two things dominate your design:\n\n**1. GPUs are the scarce, expensive bottleneck**\nA single A100 80GB GPU costs ~$3/hour on cloud. A 70B parameter model needs 2× A100s just to load. Efficient GPU utilization is the primary engineering goal — every idle GPU cycle is wasted money.\n\n**2. Requests have wildly variable cost**\nA request asking for 5 tokens completes in under 100ms. A request asking for 4,000 tokens takes 60+ seconds. Your system must handle this variance without letting expensive requests starve shorter ones.\n\n**Key metrics to keep in mind throughout this design:**\n- **TTFT** (Time To First Token): How long until the user sees the first word. Target: < 500ms.\n- **TPOT** (Time Per Output Token): How fast subsequent tokens arrive. Target: < 50ms/token.\n- **GPU utilization**: Should stay above 80% — below that means wasted spend.\n- **Throughput**: Total tokens generated per second across all users.\n\nWe will build this system layer by layer, starting from how clients connect and ending with full observability."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Request Handling",
+      "id": "ai_001_step_02",
+      "stepNumber": 2,
+      "title": "What Do Clients Actually Need?",
+      "type": "explanation",
+      "content": "## Client Interface Patterns\n\nBefore placing any component, decide what your clients need. LLM platforms serve three distinct usage patterns:\n\n**Pattern 1 — Interactive Chat (most common)**\nUser types a message and expects to see tokens appear one by one within 500ms. Requires **streaming**.\n\n**Pattern 2 — Programmatic / API Integration**\nDeveloper app sends a request and waits for the full completion. Can tolerate 5–30 seconds. Requires **synchronous HTTP**.\n\n**Pattern 3 — Batch Processing**\nRunning evaluations, generating embeddings, or processing large datasets overnight. Tolerates minutes of latency. Requires **async job submission** with a callback.\n\nOur architecture must support all three from day one. The streaming path requires our entire stack to support **SSE or WebSocket pass-through** — this constraint propagates from the API Gateway all the way through the queue and inference workers.\n\n**Decision point coming next:** We will choose SSE over WebSocket for streaming — explaining why is the next step."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Request Handling",
+      "component": {
+        "highlightReason": "The API Gateway is the single entry point that enforces authentication and routes traffic. Choose one that supports streaming pass-through — buffering kills the real-time token experience.",
+        "componentType": "api-gateway",
+        "label": "API Gateway",
+        "position": {
+          "x": 80,
+          "y": 200
+        },
+        "nodeId": "guided_api_gateway",
+        "properties": {
+          "throttling": true,
+          "rateLimiting": true,
+          "tlsTermination": true,
+          "description": "<p>The single entry point for all client traffic. Handles TLS termination, JWT authentication, rate-limit enforcement, and SSE pass-through for token streaming.</p><p><strong>Why buffering must be disabled:</strong> Buffering SSE responses means users wait for the full generation before seeing the first token — destroying the interactive experience. The gateway forwards bytes as they arrive from inference workers.</p><p><strong>Timeout note:</strong> AWS API Gateway has a hard 29-second integration timeout. For long generations (4,000 tokens × 50ms = 200s) use an ALB with 300s target timeout, or Kong/Nginx with <code>proxy_read_timeout 300s</code>.</p><p><strong>Routing:</strong> <code>/v1/chat/completions</code> → inference path, <code>/v1/embeddings</code> → embedding service. All other paths return 404 before touching any downstream resource.</p>",
+          "componentName": "API Gateway",
+          "requestsPerSecond": 1000,
+          "inputValidation": true,
+          "deduplication": false,
+          "authentication": "JWT"
+        }
+      },
+      "id": "ai_001_step_03",
+      "stepNumber": 3,
+      "title": "Add the API Gateway",
+      "type": "add_component",
+      "content": "## API Gateway — Your Single Entry Point\n\nAll client traffic enters through the API Gateway. It handles:\n- **TLS termination**: Decrypt HTTPS here so downstream services communicate over HTTP internally.\n- **Authentication**: Validate JWT Bearer tokens on every request. Reject unauthenticated calls before they reach inference workers.\n- **Request routing**: `/v1/chat/completions` → inference path; `/v1/embeddings` → embedding path.\n- **SSE / WebSocket pass-through**: The gateway must not buffer streaming responses — it must forward bytes as they arrive from the backend.\n\nFor LLM platforms scaled to production, consider **AWS API Gateway** (managed) or **Kong/Nginx** (self-hosted). AWS API Gateway has a 29-second integration timeout which is problematic for long generations — for those, use WebSocket APIs or an ALB instead."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Request Handling",
+      "decision": {
+        "alternatives": [
+          {
+            "tradeoff": "Bidirectional connection — unnecessary overhead since LLM responses are one-way. Requires WebSocket-aware proxies and load balancers. Complicates sticky session handling. Use only if clients need to interrupt/cancel mid-stream (can be done with HTTP DELETE instead).",
+            "option": "WebSocket"
+          },
+          {
+            "tradeoff": "Best raw throughput and type safety. However, poor native browser support (requires gRPC-Web proxy), extra infrastructure complexity. Good choice for server-to-server use cases (e.g., internal microservice calls to the inference engine).",
+            "option": "gRPC server streaming"
+          },
+          {
+            "tradeoff": "Client repeatedly polls for new tokens. Adds 50–200ms latency per token, wastes bandwidth, and hammers your API Gateway. Avoid entirely for interactive chat.",
+            "option": "HTTP Long-Polling"
+          }
+        ],
+        "question": "Which streaming protocol should clients use to receive token-by-token responses?",
+        "chosenReason": "SSE is unidirectional (server → client only), which is exactly what token streaming requires. It works over standard HTTP/1.1 and HTTP/2, is natively supported by all browsers via `EventSource`, auto-reconnects on disconnect, and is far simpler to proxy through load balancers without special WebSocket upgrade handling. The OpenAI API uses SSE — aligning with this standard means every existing OpenAI client library works with your platform out of the box.",
+        "chosen": "Server-Sent Events (SSE)"
+      },
+      "id": "ai_001_step_04",
+      "stepNumber": 4,
+      "title": "Streaming Protocol: SSE vs WebSocket",
+      "type": "decision_point",
+      "content": "## How Should Clients Receive Streaming Tokens?\n\nThis is the first architectural decision that will affect your entire stack — from the gateway down to the inference worker response format."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Request Handling",
+      "component": {
+        "highlightReason": "Least-connections is critical for LLM workloads. Round-robin would overload workers handling long-running streaming requests while other workers sit idle. Also set a long timeout — 70B model generating 2000 tokens can take 2–3 minutes.",
+        "componentType": "loadbalancer",
+        "label": "Load Balancer",
+        "position": {
+          "x": 280,
+          "y": 200
+        },
+        "nodeId": "guided_load_balancer",
+        "properties": {
+          "multiAZ": true,
+          "ddosProtection": true,
+          "sslTermination": false,
+          "stickiness": false,
+          "description": "<p>Distributes incoming requests across inference worker pods. The algorithm choice has direct impact on GPU utilization and user-visible latency.</p><p><strong>Why least-connections, not round-robin:</strong> A 10-token request completes in 500ms; a 4,000-token request takes 200s. Round-robin sends equal request counts to every worker regardless of duration — workers holding long streams get overwhelmed while idle workers sit waiting. Least-connections routes each new request to the worker with the fewest active connections, naturally load-balancing by actual processing capacity.</p><p><strong>Connection draining:</strong> When a worker is removed (scale-down or deployment), 60s draining lets in-flight SSE streams finish. Without it, active connections are abruptly cut mid-generation, causing visible errors for users.</p><p><strong>Health check:</strong> Workers expose <code>/health</code> returning 200 only once the model is fully loaded. The LB polls every 10s and stops routing to workers that fail 3 consecutive checks — preventing requests from reaching a worker still loading 70B model weights (3–5 min cold start).</p><p><strong>No SSL termination here:</strong> TLS was already terminated at the API Gateway. The LB operates on plain HTTP internally, avoiding double-decryption overhead.</p>",
+          "type": "Layer 7 (Application)",
+          "healthCheckInterval": 10,
+          "healthCheck": true,
+          "accessLogs": true,
+          "componentName": "Load Balancer",
+          "waf": false,
+          "connectionDraining": true,
+          "algorithm": "least-connections"
+        }
+      },
+      "id": "ai_001_step_05",
+      "stepNumber": 5,
+      "title": "Add the Load Balancer",
+      "type": "add_component",
+      "content": "## Load Balancer — Don't Use Round-Robin Here\n\nLLM requests have highly variable duration — a 10-token request finishes in 500ms, a 4000-token request takes 60 seconds. **Round-robin will overload workers** that received a cluster of long requests while idle workers wait.\n\nUse **least-connections** algorithm: route each new request to the worker with the fewest active connections. This naturally balances load proportional to actual processing capacity.\n\n**Sticky sessions** are required for WebSocket connections (if you support them). For SSE over HTTP/2, they are not needed.\n\n**Long timeout**: Set request timeout to at least 120 seconds. A 4000-token generation at 50ms/token = 200s. Clients should handle timeout themselves via a `max_tokens` parameter."
+    },
+    {
+      "phase": "Phase 1: Entry Point & Request Handling",
+      "connection": {
+        "description": "Authenticated requests forwarded to the load balancer. Streaming token responses travel back on the same long-lived HTTP connection using SSE (Content-Type: text/event-stream).",
+        "edgeId": "guided_edge_gw_lb",
+        "label": "HTTPS + SSE",
+        "targetNodeId": "guided_load_balancer",
+        "connectionType": "http",
+        "sourceNodeId": "guided_api_gateway"
+      },
+      "id": "ai_001_step_06",
+      "stepNumber": 6,
+      "title": "Connect Client → API Gateway → Load Balancer",
+      "type": "add_connection",
+      "content": "## Wiring the Entry Path\n\nConnect the API Gateway to the Load Balancer. This is the hot path for every user request.\n\n**What flows through this connection:**\n- Authenticated, rate-checked requests\n- Streaming responses travel back on the same connection (SSE)\n- Headers include: `Authorization`, `Content-Type: application/json`, and on response: `Content-Type: text/event-stream`\n\nThe load balancer sees individual HTTP requests and distributes them across the inference worker pool."
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "component": {
+        "highlightReason": "The queue is what lets you absorb traffic bursts without dropping requests. It also enables priority-based scheduling — interactive users get served before background batch jobs — which is impossible to do cleanly without a queue.",
+        "componentType": "message-broker",
+        "label": "Request Queue",
+        "position": {
+          "x": 480,
+          "y": 200
+        },
+        "nodeId": "guided_request_queue",
+        "properties": {
+          "partitions": 2,
+          "replication": 2,
+          "description": "<p>Decouples request acceptance from GPU execution. Without a queue, traffic spikes hit workers directly — if 200 requests arrive per second but only 4 workers exist, 196 fail. The queue accepts all 200 and processes them at the rate GPUs allow.</p><p><strong>Priority queues:</strong> Two partitions — <code>realtime-priority</code> (interactive chat) and <code>batch-priority</code> (background jobs). Workers drain realtime before touching batch, ensuring interactive users are never queued behind slow batch jobs.</p><p><strong>Backpressure:</strong> When realtime queue depth exceeds 10,000 requests, return HTTP 429 immediately rather than accumulating unbounded memory. Explicit rejection is better than silent queue exhaustion.</p><p><strong>Request TTL:</strong> Requests expire after 30s in queue. A stale response to a question the user already re-submitted is worse than a clean timeout error.</p><p><strong>Technology:</strong> Redis Streams for &lt;100K RPM. Kafka for &gt;1M RPM or if message replay for auditing is required.</p>",
+          "durable": true,
+          "componentName": "Request Queue",
+          "retention": 0
+        }
+      },
+      "id": "ai_001_step_07",
+      "stepNumber": 7,
+      "title": "Add a Request Queue (Message Broker)",
+      "type": "add_component",
+      "content": "## Why a Queue? Decoupling Acceptance from Execution\n\nWithout a queue, traffic spikes hit GPU workers directly. If 200 requests arrive in 1 second but you only have 4 workers, 196 requests fail. With a queue, you accept all 200 requests and process them at the rate your GPUs allow.\n\n**Priority Queues**: Two queues — `realtime` (interactive chat, processed immediately) and `batch` (background jobs, processed when capacity allows). Workers drain `realtime` first.\n\n**Backpressure**: When `realtime` queue depth exceeds 10,000 requests, return HTTP 429 to new clients immediately rather than accumulating unbounded memory.\n\n**Technology choice**: Redis Streams for simplicity at moderate scale (<100K RPM). Kafka for high-throughput (>1M RPM) or if you need message replay for auditing.\n\n**Queue TTL**: Requests expire after 30 seconds in queue. If a request hasn't been picked up in 30 seconds, return a timeout error rather than delivering a stale response."
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "id": "ai_001_step_08",
+      "stepNumber": 8,
+      "title": "Understanding GPU Worker Architecture",
+      "type": "explanation",
+      "content": "## The Heart of the System: Inference Workers\n\nEach inference worker is a Kubernetes Pod with dedicated GPU resources running an inference engine.\n\n**GPU math for a 70B model:**\n- 70B parameters × 2 bytes (BF16) = **140 GB VRAM** at full precision\n- With AWQ 4-bit quantization: ~40 GB VRAM — fits on a single A100 80GB with room for KV cache\n- Recommended for production: **2× A100 80GB** per worker for safety margin and KV cache headroom\n\n**Continuous Batching** — the key throughput optimization:\nTraditional batching: Wait to collect N requests → run batch → return all results. This wastes GPU compute while waiting.\n\nContinuous batching (vLLM's approach): The GPU never waits. As soon as one request finishes a generation step, a new request is slotted in. At any moment, the GPU processes 32–256 sequences simultaneously. This achieves 10–24× higher throughput vs naive batching.\n\n**Worker lifecycle:**\n1. Start → Load model weights from NFS/S3 (~3-5 min for 70B)\n2. Ready → Pull requests from queue\n3. Generating → Continuous batching via vLLM engine\n4. Streaming → Send generated tokens back as SSE to waiting connection\n5. Scale-down drain → Accept no new requests, finish in-flight ones, terminate"
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "component": {
+        "highlightReason": "vLLM's PagedAttention eliminates KV cache fragmentation and enables continuous batching — achieving 10-24× higher throughput than naive implementations. This is your most expensive resource; maximize GPU utilization here above everything else.",
+        "componentType": "backend-server",
+        "label": "Inference Workers (vLLM)",
+        "position": {
+          "x": 680,
+          "y": 200
+        },
+        "nodeId": "guided_inference_workers",
+        "properties": {
+          "instances": 2,
+          "description": "<p>GPU-backed worker pods running the vLLM inference engine. These are the most expensive components — every design decision here has direct cost impact.</p><p><strong>Why vLLM:</strong> PagedAttention manages KV cache like OS virtual memory — allocating it in fixed 16-token pages that can be non-contiguous. This eliminates fragmentation and increases GPU memory utilization by up to 14×. Combined with continuous batching, it achieves 10–24× higher throughput than naive implementations and is compatible with the OpenAI API spec out of the box — no custom client library needed.</p><p><strong>Continuous batching:</strong> The GPU never idles waiting for a full batch. As soon as one request finishes a generation step, a new request is slotted in. Up to 256 sequences are processed simultaneously on one worker.</p><p><strong>GPU sizing:</strong> A 70B model at BF16 needs 140GB VRAM. Two A100 80GB GPUs = 160GB — enough for weights plus KV cache headroom. AWQ 4-bit quantization fits the model in ~40GB, cutting hardware cost roughly in half.</p><p><strong>Worker lifecycle:</strong> Start → load weights from EFS (~3–5 min) → ready → pull from realtime queue → continuous batching → stream SSE tokens back → scale-down drain (finish in-flight, then terminate).</p>",
+          "componentName": "Inference Workers (vLLM)",
+          "caching": true,
+          "bulkOps": false,
+          "retry": true,
+          "architecture": "Microservices"
+        }
+      },
+      "id": "ai_001_step_09",
+      "stepNumber": 9,
+      "title": "Add Inference Workers (GPU Compute)",
+      "type": "add_component",
+      "content": "## Inference Workers — The GPU Powerhouse\n\nThese are the most expensive components in your system. Every design decision here has a direct cost impact.\n\n**Why vLLM?** Its core innovation, **PagedAttention**, manages KV cache memory like OS virtual memory — dividing it into fixed-size pages that can be allocated non-contiguously. This eliminates memory fragmentation and increases GPU memory utilization by up to 14×. Combined with continuous batching, vLLM achieves throughput competitive with TensorRT-LLM with far less operational complexity.\n\n**Kubernetes deployment**: Each worker is a Pod with `resource.limits.nvidia.com/gpu: 2`. Use a GPU-specific node pool with auto-scaling. Set `requests == limits` for GPU (Kubernetes doesn't support fractional GPU overcommit).\n\n**Model loading**: Workers load model weights on startup from a shared NFS volume (EFS on AWS) mounted at `/models`. NFS is faster than loading from S3 directly and is shared across all workers."
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "decision": {
+        "alternatives": [
+          {
+            "tradeoff": "~30% higher raw throughput than vLLM, but requires compiling each model into a TensorRT engine (hours per model). Hard-coded to NVIDIA hardware. Complex model update process. Best choice if you serve a single model at massive scale and performance is the only metric.",
+            "option": "TensorRT-LLM (NVIDIA)"
+          },
+          {
+            "tradeoff": "Strong for CPU offloading and models that don't fit in GPU VRAM. Lower GPU throughput than vLLM for models that do fit. Good for 180B+ parameter models that require CPU-GPU hybrid execution.",
+            "option": "DeepSpeed-MII"
+          },
+          {
+            "tradeoff": "CPU-first runtime. No GPU utilization. Only viable for models under 13B in a development or edge deployment context. Not suitable for production serving at scale.",
+            "option": "Llama.cpp (CPU/Apple Silicon)"
+          },
+          {
+            "tradeoff": "NVIDIA's general-purpose model server. Works well as a deployment wrapper around TensorRT-LLM engines. Adds operational complexity without adding throughput when paired with vLLM.",
+            "option": "Triton Inference Server"
+          }
+        ],
+        "question": "Which inference engine should power the GPU workers?",
+        "chosenReason": "vLLM provides the best balance of throughput, operational simplicity, and ecosystem support. PagedAttention solves KV cache fragmentation — the primary bottleneck for concurrent serving. It supports all major model architectures (Llama, Mistral, Qwen, etc.) and is compatible with the OpenAI API spec out of the box. No per-model compilation step means faster deployments and model updates.",
+        "chosen": "vLLM"
+      },
+      "id": "ai_001_step_10",
+      "stepNumber": 10,
+      "title": "Inference Engine Decision: vLLM vs TensorRT-LLM",
+      "type": "decision_point",
+      "content": "## Choosing the Right Inference Engine\n\nThis is a critical decision — the inference engine determines your maximum achievable throughput and operational complexity."
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "component": {
+        "highlightReason": "The KV cache lives inside each inference worker's GPU VRAM. PagedAttention eliminates memory fragmentation, while prefix caching means repeated conversation history (system prompt + prior messages) is computed only once — cutting TTFT by up to 90% for multi-turn chat.",
+        "componentType": "cache",
+        "label": "KV Cache (PagedAttention)",
+        "position": {
+          "x": 880,
+          "y": 300
+        },
+        "nodeId": "guided_kv_cache",
+        "properties": {
+          "replication": false,
+          "eviction": "lru",
+          "encryption": false,
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>During the <strong>prefill phase</strong>, the model computes Key-Value attention states for every token in the prompt and stores them in GPU VRAM. During the <strong>decode phase</strong>, each new output token uses these cached states instead of reprocessing the entire context — this is what makes token-by-token generation fast.</p><p><strong>PagedAttention:</strong> Allocates KV cache in fixed 16-token pages, like OS virtual memory. Pages from finished sequences are immediately recycled. This eliminates external fragmentation — the primary source of wasted GPU VRAM in naive implementations that reserve contiguous blocks per sequence.</p><p><strong>Prefix caching:</strong> If a new request shares the same system prompt + conversation history prefix as a previous request, vLLM reuses the already-computed KV states — turning a 3-second prefill into a 10ms cache lookup. For chatbot workloads with consistent system prompts, 40–60% hit rates are achievable, directly reducing TTFT.</p><p><strong>Memory budget:</strong> Up to 40% of GPU VRAM (32GB on A100 80GB) reserved for KV cache. Remaining 60% holds model weights. LRU eviction frees the oldest pages when VRAM fills.</p>",
+          "cacheStrategy": "cache-aside",
+          "persistence": false,
+          "maxMemoryGB": 32,
+          "componentName": "KV Cache (PagedAttention)",
+          "ttl": 3600,
+          "clusterMode": false
+        }
+      },
+      "id": "ai_001_step_11",
+      "stepNumber": 11,
+      "title": "Add the KV Cache Store",
+      "type": "add_component",
+      "content": "## KV Cache — The Memory at the Core of Inference\n\nDuring the **prefill phase** of inference, the model processes the entire input prompt and computes Key-Value (KV) attention states for each token. These KV states are stored in GPU VRAM so they don't need to be recomputed for each new output token during the **decode phase**.\n\n**PagedAttention (vLLM's implementation)**: Allocates KV cache in fixed 16-token pages, like virtual memory. Pages from finished sequences are immediately recycled. This eliminates external fragmentation — the #1 source of wasted GPU memory in naive implementations.\n\n**Prefix Caching** (the killer optimization for chat): If a user sends message #5 in a long conversation, the system prompt + messages 1-4 have already been processed. With prefix caching, vLLM detects that the first N tokens of the KV cache are identical to a previous request and reuses the cached KV states. This turns a 3-second prefill into a 10ms cache lookup.\n\n**Impact**: For chatbot workloads with consistent system prompts, prefix cache hit rates of 40-60% are achievable, translating directly into reduced TTFT."
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "connection": {
+        "description": "The load balancer enqueues incoming requests into the realtime or batch priority queue. The connection is maintained while waiting for the streaming response to flow back — the load balancer holds the client connection open until the worker finishes generating.",
+        "edgeId": "guided_edge_lb_queue",
+        "label": "Enqueue Request",
+        "targetNodeId": "guided_request_queue",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_load_balancer"
+      },
+      "id": "ai_001_step_12",
+      "stepNumber": 12,
+      "title": "Connect Load Balancer → Queue → Workers",
+      "type": "add_connection",
+      "content": "## Wiring the Inference Pipeline\n\nConnect the Load Balancer to the Request Queue. The load balancer enqueues each request rather than forwarding directly to a worker — this is what enables burst absorption and priority scheduling."
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "connection": {
+        "description": "Workers pull requests from priority queues using a competing consumer pattern. Multiple pulled requests are assembled into a continuous batch. Generated tokens stream back to waiting client connections as SSE events (token-by-token).",
+        "edgeId": "guided_edge_queue_workers",
+        "label": "Pull & Batch",
+        "targetNodeId": "guided_inference_workers",
+        "connectionType": "message-queue",
+        "sourceNodeId": "guided_request_queue"
+      },
+      "id": "ai_001_step_13",
+      "stepNumber": 13,
+      "title": "Connect Queue → Inference Workers",
+      "type": "add_connection",
+      "content": "## Workers Pull from the Queue\n\nInference workers pull requests from the queue (competing consumer pattern). Workers always drain the `realtime` queue before touching `batch`.\n\n**Streaming response path**: After dequeuing a request, the worker streams generated tokens back to the load balancer → gateway → client via SSE. The connection through the queue is for request delivery; the response travels back through a separate response channel (HTTP response to the original long-lived connection)."
+    },
+    {
+      "phase": "Phase 2: Model Serving Core",
+      "component": {
+        "highlightReason": "Decoupling model weights from the inference workers (via a registry) enables zero-downtime model updates, fast autoscale cold starts, and running multiple model versions simultaneously. EFS pre-caching is the key to sub-5-minute cold starts for 70B models.",
+        "componentType": "file-storage",
+        "label": "Model Registry",
+        "position": {
+          "x": 680,
+          "y": 430
+        },
+        "nodeId": "guided_model_registry",
+        "properties": {
+          "storageTB": 2,
+          "description": "<p>Version-controlled storage for model weights. Decoupling weights from workers enables zero-downtime model updates, fast autoscale cold starts, and running multiple model versions simultaneously.</p><p><strong>Two-tier strategy:</strong></p><ul><li><strong>S3 (cold storage):</strong> Master copy of all model versions with versioning enabled. Immutable source of truth — a bad upload never overwrites a working version.</li><li><strong>EFS (hot cache):</strong> Weights pre-fetched to a shared NFS volume. Workers mount this at startup and load in 3–5 minutes vs 15+ minutes from S3 directly.</li></ul><p><strong>Hot-swap protocol:</strong> Upload to S3 → pre-load to EFS in background (no traffic impact) → start canary workers on new version → shift traffic 10% → 50% → 100% with 5-minute eval windows → drain old workers. Rollback if error rate exceeds 0.5% at any step.</p><p><strong>Why it works:</strong> Workers are stateless (weights are read-only mounts). The queue decouples client connections from worker assignments. v1 and v2 workers pull from the same queue — the LB traffic split handles proportional draining naturally.</p>",
+          "componentName": "Model Registry",
+          "throughput": 2000,
+          "type": "EFS"
+        }
+      },
+      "id": "ai_001_step_14",
+      "stepNumber": 14,
+      "title": "Add the Model Registry",
+      "type": "add_component",
+      "content": "## Model Registry — Version-Controlled Weight Storage\n\nModel weights for a 70B model are 140GB+ on disk. Loading them directly from S3 on every cold start takes 10-15 minutes — unacceptable for autoscaling.\n\n**Two-tier storage strategy**:\n1. **S3 (cold storage)**: Master copy of all model versions with S3 versioning. Immutable source of truth.\n2. **NFS / EFS (hot cache)**: Model weights pre-fetched to a shared NFS volume. Inference workers mount this via EFS and load weights in 3-5 minutes from NFS vs 15+ minutes from S3.\n\n**Hot-swap protocol**: When releasing a new model version:\n1. Upload new weights to S3\n2. Pre-load onto NFS in the background (doesn't interrupt serving)\n3. Start new worker pods pointing to the new version\n4. Gradually shift traffic 10% → 50% → 100% over 30 minutes\n5. Deregister old workers after draining in-flight requests\n\n**This zero-downtime rollout is only possible because workers and weights are decoupled** via the registry."
+    },
+    {
+      "phase": "Phase 3: Scalability & Resource Management",
+      "id": "ai_001_step_15",
+      "stepNumber": 15,
+      "title": "When to Scale: GPU Worker Autoscaling",
+      "type": "scale_trigger",
+      "scaleTrigger": {
+        "action": "Add 2 new inference worker pods. Pre-warm by loading model weights before accepting traffic. New pods enter 'loading' state, then 'ready' state — only then does the load balancer send them traffic.",
+        "metric": "Queue depth in realtime queue > 50 requests OR TTFT p95 > 400ms for 2 consecutive minutes",
+        "impact": "Each new worker handles ~256 concurrent sequences. Scale-up latency is 3-5 minutes (model loading). Maintain a minimum 20% spare capacity buffer during peak hours. At 10K concurrent users, expect 4-8 worker pods at steady state."
+      },
+      "content": "## Autoscaling GPU Workers — The Most Important Scaling Decision\n\nLLM workloads cannot use standard CPU/memory-based HPA. GPU utilization alone is misleading — a GPU can be 95% utilized but have zero new capacity (all tokens allocated to existing sequences).\n\n**The right metrics to scale on:**\n1. Queue depth (primary signal): Scale up when `realtime` queue depth > 50 requests\n2. TTFT p95 (user experience signal): Scale up when p95 TTFT > 400ms for 2 consecutive minutes\n3. KV cache utilization (memory signal): Scale up when KV cache >90% full on all workers\n\n**Scale-down caution:** Don't scale down too aggressively. Model loading takes 3-5 minutes. Keep at least 20% spare capacity (buffer workers) at all times during peak hours to avoid gaps in serving."
+    },
+    {
+      "phase": "Phase 3: Scalability & Resource Management",
+      "component": {
+        "highlightReason": "Token-based rate limiting (not just request-based) is essential for LLM APIs because request cost varies 100-1000× based on token count. Redis atomic operations ensure no race conditions in quota checks under concurrent requests from the same user.",
+        "componentType": "cache",
+        "label": "Rate Limiter (Redis)",
+        "position": {
+          "x": 280,
+          "y": 0
+        },
+        "nodeId": "guided_rate_limiter",
+        "properties": {
+          "replication": true,
+          "eviction": "volatile-lru",
+          "encryption": true,
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>Token-based rate limiting for LLM APIs. Standard request-count limits are inadequate because one 4,000-token request consumes 400× the GPU resources of a 10-token request.</p><p><strong>Sliding window algorithm:</strong> Fixed-window limits allow a burst of 2× a user's limit at window boundaries. Sliding window spreads usage smoothly across time, preventing bursts that starve other users' GPU capacity.</p><p><strong>Implementation:</strong> Redis EVAL with atomic Lua scripts for check-and-decrement. Sub-millisecond per request — this is on the hot path for every API call and must not add perceptible latency.</p><p><strong>Token counting:</strong> Input tokens are counted before enqueuing (known upfront from the prompt). Output tokens are deducted after generation completes — reserve an estimate, then reconcile the actual count against the durable quota DB afterwards.</p><p><strong>Tiers:</strong> Free: 10 RPM / 50K tokens per day. Pro: 100 RPM / 2M tokens per day. Enterprise: custom limits per API key.</p>",
+          "cacheStrategy": "cache-aside",
+          "persistence": false,
+          "maxMemoryGB": 4,
+          "componentName": "Rate Limiter (Redis)",
+          "ttl": 86400,
+          "clusterMode": false
+        }
+      },
+      "id": "ai_001_step_16",
+      "stepNumber": 16,
+      "title": "Add Rate Limiter (Redis)",
+      "type": "add_component",
+      "content": "## Rate Limiting — Protect the System from Overload\n\nRate limiting for LLM APIs is more complex than standard REST APIs because **resource consumption must account for tokens, not just requests**. One request asking for 4,000 tokens consumes 400× the GPU resources of a request asking for 10 tokens.\n\n**Token-based rate limiting strategy:**\n- Free tier: 10 RPM AND 50,000 tokens/day\n- Pro tier: 100 RPM AND 2,000,000 tokens/day\n- Enterprise: Custom limits per API key\n\n**Sliding window algorithm** (not fixed window): A fixed window allows a user to burn their entire hourly quota in the first minute, then nothing for 59 minutes. Sliding window spreads usage smoothly.\n\n**Implementation**: Redis with atomic Lua scripts for check-and-decrement. Each API request does a Redis EVAL to check quota before forwarding to the queue. Sub-millisecond latency.\n\n**Token counting**: Count tokens before sending to the queue (input tokens known upfront). Deduct output tokens after generation completes (output count not known in advance — reserve an estimate, reconcile after)."
+    },
+    {
+      "phase": "Phase 3: Scalability & Resource Management",
+      "component": {
+        "highlightReason": "A 20% cache hit rate translates directly to 20% GPU cost savings and sub-10ms TTFT for cached responses vs 200-500ms from GPU. Only cache temperature=0 generations — caching non-deterministic outputs would return stale/incorrect responses.",
+        "componentType": "cache",
+        "label": "Response Cache (Redis)",
+        "position": {
+          "x": 880,
+          "y": 100
+        },
+        "nodeId": "guided_result_cache",
+        "properties": {
+          "replication": true,
+          "eviction": "lru",
+          "encryption": true,
+          "engine": "redis",
+          "inMemory": true,
+          "description": "<p>Caches completed LLM responses for deterministic requests to eliminate redundant GPU work. A 20% hit rate cuts GPU costs by 20% and reduces TTFT to &lt;10ms vs 200–500ms from GPU.</p><p><strong>When to cache:</strong> Only when <code>temperature=0</code> (deterministic output). When temperature &gt; 0, the model introduces randomness — caching would return the same response to every user for the same prompt, which is both incorrect and a privacy concern.</p><p><strong>Cache key:</strong> <code>SHA256(model_id + normalized_prompt + generation_params)</code>. Must include model_id (same prompt on a different model = different output) and all generation params. SHA256 produces a fixed 32-byte key regardless of prompt length.</p><p><strong>Expected hit rates:</strong> FAQ/knowledge base bots: 60–80%. Code generation: 20–30%. Creative writing: 0% (temperature &gt; 0 by definition).</p><p><strong>Write path:</strong> Workers write to cache asynchronously after the last token is streamed — zero latency impact on the response path. Cache-aside read: gateway checks cache before enqueuing; hit returns immediately, miss goes to inference worker.</p>",
+          "cacheStrategy": "cache-aside",
+          "persistence": false,
+          "maxMemoryGB": 50,
+          "componentName": "Response Cache (Redis)",
+          "ttl": 3600,
+          "clusterMode": false
+        }
+      },
+      "id": "ai_001_step_17",
+      "stepNumber": 17,
+      "title": "Add Response Cache",
+      "type": "add_component",
+      "content": "## Response Cache — Avoid Redundant GPU Work\n\nFor **deterministic generations** (temperature=0, top_p=1), the same prompt always produces the same output. Caching these responses means identical prompts never hit the GPU a second time.\n\n**When to cache:**\n- Only when `temperature=0` or the request explicitly sets `use_cache=true`\n- Never cache non-deterministic outputs (temperature>0) — responses would be stale/incorrect\n- Cache by `hash(model_id + normalized_prompt + generation_params)`\n\n**Expected hit rate:**\n- Knowledge base / FAQ Q&A: 60-80% hit rate (same questions repeatedly)\n- Code generation: 20-30% hit rate (similar boilerplate generations)\n- Creative writing: 0% (temperature>0 by definition)\n\n**Business impact**: Even a 20% cache hit rate cuts GPU costs by 20% and reduces TTFT to <10ms for cached responses (vs 500ms from GPU)."
+    },
+    {
+      "phase": "Phase 3: Scalability & Resource Management",
+      "connection": {
+        "description": "After generation completes, workers write the full response to the cache asynchronously. Zero impact on streaming latency. Future identical requests (temperature=0) will be served from cache in <10ms instead of hitting the GPU.",
+        "edgeId": "guided_edge_workers_cache",
+        "label": "Async Cache Write",
+        "targetNodeId": "guided_result_cache",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_inference_workers"
+      },
+      "id": "ai_001_step_18",
+      "stepNumber": 18,
+      "title": "Connect Workers → Response Cache",
+      "type": "add_connection",
+      "content": "## Workers Write to Cache Asynchronously\n\nAfter completing a generation, workers write the full response to the cache. This write is **asynchronous** — it happens after the last token has been streamed to the client, so it adds zero latency to the response path.\n\n**Cache-aside pattern on read:**\n1. API Gateway checks Response Cache before enqueuing\n2. Cache hit → return immediately (< 10ms)\n3. Cache miss → enqueue to inference worker\n4. Worker generates → streams to client → writes to cache"
+    },
+    {
+      "phase": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "component": {
+        "highlightReason": "GPU-specific metrics (VRAM utilization, KV cache hit rate, TTFT percentiles) are what drive autoscaling and cost optimization decisions. Without them, you are flying blind on your most expensive resources. vLLM exposes these natively in Prometheus format.",
+        "componentType": "monitoring",
+        "label": "Monitoring (Prometheus + Grafana)",
+        "position": {
+          "x": 80,
+          "y": 430
+        },
+        "nodeId": "guided_monitoring",
+        "properties": {
+          "alerts": true,
+          "description": "<p>Standard web metrics (request rate, error rate, latency) are insufficient for LLM platforms. GPU-specific and ML-specific metrics are what drive autoscaling and cost optimization decisions.</p><p><strong>Critical LLM metrics and alert thresholds:</strong></p><ul><li><strong>TTFT p95 &gt; 400ms</strong> — user SLA breach (PagerDuty alert)</li><li><strong>TPOT &gt; 60ms/token</strong> — token streaming feels laggy to users</li><li><strong>GPU utilization &lt; 70% for 10 min</strong> — wasted spend signal</li><li><strong>VRAM utilization &gt; 95%</strong> — KV cache eviction imminent</li><li><strong>Queue depth &gt; 100</strong> — autoscale trigger</li><li><strong>KV cache hit rate &lt; 30%</strong> — prefix caching not working</li><li><strong>Worker cold start &gt; 7 min</strong> — EFS/NFS performance issue</li></ul><p><strong>vLLM integration:</strong> vLLM exposes a <code>/metrics</code> endpoint in native Prometheus format — no custom exporter needed. All GPU and inference metrics are available out of the box.</p><p><strong>Autoscale feedback loop:</strong> Prometheus Adapter exports <code>llm_queue_depth</code>, <code>llm_ttft_p95_ms</code>, and <code>llm_kv_cache_utilization</code> as Kubernetes HPA custom metrics. Standard CPU/memory HPA is not sufficient — a GPU can be 95% utilized yet have zero capacity for new sequences.</p>",
+          "stack": "Prometheus + Grafana",
+          "componentName": "Monitoring (Prometheus + Grafana)",
+          "metrics": true,
+          "retention": 30
+        }
+      },
+      "id": "ai_001_step_19",
+      "stepNumber": 19,
+      "title": "Add Monitoring & Observability",
+      "type": "add_component",
+      "content": "## Monitoring — You Cannot Optimize What You Don't Measure\n\nFor LLM platforms, standard web metrics (request rate, error rate, latency) are necessary but insufficient. You need **GPU-specific and ML-specific metrics**.\n\n**Critical metrics to instrument:**\n\n| Metric | Alert Threshold | Why It Matters |\n|--------|----------------|----------------|\n| TTFT p95 | > 400ms | User experience SLA |\n| TPOT (ms/token) | > 60ms | Token streaming feels laggy |\n| GPU utilization % | < 70% for 10 min | Wasted money signal |\n| GPU VRAM utilization | > 95% | KV cache eviction imminent |\n| Queue depth | > 100 | Auto-scale trigger |\n| KV cache hit rate | < 30% | Prefix caching not working |\n| Request error rate | > 1% | System health |\n| Worker cold start time | > 7 min | EFS/NFS performance issue |\n\n**Tooling**: Prometheus (metrics collection) + Grafana (dashboards) + PagerDuty (alerting). vLLM exposes a `/metrics` endpoint in Prometheus format out of the box."
+    },
+    {
+      "phase": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "component": {
+        "highlightReason": "PostgreSQL is the right choice for quota tracking because billing queries (SUM, GROUP BY time period) are natural SQL aggregations. Aurora Serverless scales to zero during off-hours. The Redis rate limiter handles the real-time fast path; this DB handles durability and billing.",
+        "componentType": "database",
+        "label": "Quota & Audit DB (PostgreSQL)",
+        "position": {
+          "x": 480,
+          "y": 430
+        },
+        "nodeId": "guided_quota_db",
+        "properties": {
+          "replication": 3,
+          "replicationMode": "Sync",
+          "pitr": true,
+          "wal": true,
+          "multiAZ": true,
+          "auditLog": true,
+          "rbac": true,
+          "description": "<p>Persistent, auditable quota and billing storage. Redis handles the real-time fast path; this database handles durability, billing reconciliation, and compliance.</p><p><strong>Why PostgreSQL over DynamoDB:</strong> Quota management requires ACID transactions — you must atomically check-and-decrement remaining tokens to prevent concurrent requests from exceeding limits (<code>SELECT FOR UPDATE</code>). Billing aggregation queries like <code>SELECT SUM(output_tokens) WHERE user_id=X AND date &gt;= start_of_month</code> are trivially efficient in SQL but require expensive GSI scans in DynamoDB.</p><p><strong>Aurora Serverless v2:</strong> Scales from 0.5 ACUs to 16 ACUs (64GB RAM) in seconds without restarting. For business-hours-heavy traffic patterns, this saves ~60% vs provisioned Aurora — you only pay for capacity when requests are flowing.</p><p><strong>PgBouncer connection pooling:</strong> With 20+ inference workers each maintaining connections, PgBouncer is required. PostgreSQL spawns one OS process per connection — 100 direct connections consume ~800MB just for overhead. PgBouncer multiplexes them onto 10–20 actual PostgreSQL connections.</p><p><strong>Tables:</strong> <code>user_quotas</code>, <code>api_keys</code>, <code>request_audit_log</code> (one row per completed generation with input/output token counts and cost).</p>",
+          "workload": "OLTP",
+          "connectionPooling": true,
+          "type": "RDBMS",
+          "encryption": true,
+          "engine": "postgresql",
+          "componentName": "Quota & Audit DB (PostgreSQL)",
+          "storageGB": 500,
+          "backups": true
+        }
+      },
+      "id": "ai_001_step_20",
+      "stepNumber": 20,
+      "title": "Add the Quota & Audit Database",
+      "type": "add_component",
+      "content": "## Persistent Quota Storage — Where Billing Lives\n\nThe Redis rate limiter handles in-flight request-level decisions (fast path), but you need a relational database for durable, auditable quota tracking.\n\n**What persists here:**\n- User quota balances (tokens used this billing period)\n- API key metadata (permissions, associated user, created_at)\n- Request audit log (every request: user, model, input tokens, output tokens, latency, cost)\n- Token usage by day for billing reconciliation\n\n**Why PostgreSQL, not DynamoDB?**\nBilling queries like `SELECT SUM(output_tokens) WHERE user_id=X AND date >= start_of_month` are trivially efficient in PostgreSQL. In DynamoDB, this requires a GSI scan that can get expensive for users with long histories.\n\n**Aurora Serverless v2** scales to zero when idle (overnight, weekends) — appropriate for a platform where traffic patterns are business-hours-heavy. Saves ~60% on DB costs vs provisioned Aurora."
+    },
+    {
+      "phase": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "decision": {
+        "alternatives": [
+          {
+            "tradeoff": "Can achieve atomicity via ConditionExpressions for single-item checks. But you lose JOIN capability — linking api_keys to users requires application-level lookups. Billing aggregation queries require expensive GSI scans or exporting to Athena. Use DynamoDB if you expect >100M daily quota-check writes and need sub-5ms latency on every check.",
+            "option": "DynamoDB with conditional writes"
+          },
+          {
+            "tradeoff": "Fast yes — but Redis is not durable enough for billing data. An unexpected Redis restart means losing usage history, making accurate billing impossible. Always back Redis fast-path with a persistent store.",
+            "option": "Redis only (no persistent DB)"
+          },
+          {
+            "tradeoff": "Excellent for append-only time-series audit logs with fast analytical queries. Consider this for the audit_log table once it exceeds 10B rows. Use PostgreSQL until then — premature optimization.",
+            "option": "ClickHouse / TimescaleDB for audit logs"
+          }
+        ],
+        "question": "Should we store user quotas and audit logs in PostgreSQL or DynamoDB?",
+        "chosenReason": "Quota management requires ACID transactions — you must atomically check-and-decrement a user's remaining tokens to prevent concurrent requests from exceeding limits. PostgreSQL's row-level locking handles this naturally with SELECT FOR UPDATE. Billing reporting requires aggregation queries (SUM tokens by day, GROUP BY user tier) that are efficient in SQL but expensive full-table scans in DynamoDB. The data volume is modest (millions of rows, not billions) — SQL is the right tool.",
+        "chosen": "PostgreSQL (Aurora Serverless v2)"
+      },
+      "id": "ai_001_step_21",
+      "stepNumber": 21,
+      "title": "SQL vs NoSQL for Quota & Audit Storage",
+      "type": "decision_point",
+      "content": "## Database Decision: Where Do Quotas and Audit Logs Live?\n\nThis is a common system design question — when does NoSQL win over SQL?"
+    },
+    {
+      "phase": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "connection": {
+        "description": "Before forwarding any request downstream, the API Gateway queries Redis to verify the user is within rate limits. This happens in <1ms using atomic Redis Lua scripts. If over-limit, return HTTP 429 immediately without touching the queue or GPU workers.",
+        "edgeId": "guided_edge_gw_ratelimiter",
+        "label": "Check Quota (< 1ms)",
+        "targetNodeId": "guided_rate_limiter",
+        "connectionType": "api-call",
+        "sourceNodeId": "guided_api_gateway"
+      },
+      "id": "ai_001_step_22",
+      "stepNumber": 22,
+      "title": "Connect API Gateway → Rate Limiter → Quota DB",
+      "type": "add_connection",
+      "content": "## Wiring the Rate Limiting Path\n\nEvery request flows through two quota checks:\n1. **Redis (fast path)**: Sub-millisecond sliding window check. If user is within limits, proceed immediately.\n2. **PostgreSQL (reconciliation path)**: After generation completes, write actual token usage to the audit log and decrement durable quota balance.\n\nThis two-phase approach keeps the hot path fast while ensuring billing accuracy."
+    },
+    {
+      "phase": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "connection": {
+        "description": "After each completed generation, actual input/output token counts are written to PostgreSQL for billing reconciliation and audit. The Redis sliding-window balance is updated with the reconciled value in the same operation.",
+        "edgeId": "guided_edge_ratelimiter_quotadb",
+        "label": "Token Usage Reconciliation",
+        "targetNodeId": "guided_quota_db",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_rate_limiter"
+      },
+      "id": "ai_001_step_23",
+      "stepNumber": 23,
+      "type": "add_connection",
+      "title": "Connect Rate Limiter → Quota & Audit DB",
+      "content": "## Writing Token Usage to the Audit Database\n\nThe Redis rate limiter handles the real-time fast path (sub-millisecond quota check). After each completed generation, the quota DB reconciliation path runs:\n\n1. **Input tokens**: counted before enqueuing (known upfront from the prompt)\n2. **Output tokens**: deducted after generation completes (actual count reconciled against the reserved estimate)\n3. **Audit row**: one row written to `request_audit_log` with user ID, model ID, input/output token counts, latency, and cost estimate\n\nThis two-phase approach keeps the hot path fast (Redis) while ensuring billing accuracy and compliance auditability (PostgreSQL)."
+    },
+    {
+      "phase": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "id": "ai_001_step_24",
+      "stepNumber": 24,
+      "title": "Model Hot-Swap Strategy",
+      "type": "explanation",
+      "content": "## Zero-Downtime Model Updates\n\nUpdating the model (e.g., Llama 3.1 → Llama 3.2) without any user-visible downtime requires careful orchestration.\n\n**The hot-swap protocol:**\n\n1. **Upload**: New weights uploaded to S3 model registry, assigned version tag `v2`.\n2. **Pre-load**: NFS mount updated with new weights (background, doesn't affect live traffic).\n3. **Canary workers**: Start 2 new worker Pods pointing to model `v2`. Health check passes → they become `ready`.\n4. **Traffic split**: Load balancer sends 10% of realtime traffic to v2 workers. Monitor error rate and TTFT.\n5. **Progressive rollout**: If metrics are healthy for 5 minutes: 10% → 50% → 100% with 5-minute eval windows between.\n6. **Drain old workers**: Once v1 gets 0% traffic, wait for in-flight requests to complete (connection draining, 60s). Then terminate.\n7. **Rollback trigger**: If error rate > 0.5% during any step, immediately set v1 back to 100% and page the on-call engineer.\n\n**Key insight**: The queue absorbs traffic during the transition. Because workers pull independently, v1 and v2 workers simply consume from the same queue — the load balancer's traffic split handles proportional draining naturally.\n\n**What makes this possible**: The Model Registry stores both v1 and v2 weights simultaneously. Workers are stateless (model weights are read-only mounts). The queue decouples client connections from worker assignments."
+    },
+    {
+      "phase": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "connection": {
+        "description": "Prometheus emits custom metrics consumed by Kubernetes HPA via the Prometheus Adapter. Metrics: queue_depth>50, TTFT_p95>400ms, KV_cache_util>90%. HPA adds worker pods in response, with a 3-5 min warm-up window before new workers receive traffic.",
+        "edgeId": "guided_edge_monitoring_workers",
+        "label": "Autoscale Signals (HPA)",
+        "targetNodeId": "guided_inference_workers",
+        "connectionType": "data-flow",
+        "sourceNodeId": "guided_monitoring"
+      },
+      "id": "ai_001_step_25",
+      "stepNumber": 25,
+      "title": "Connect Monitoring → Inference Workers (Autoscale Loop)",
+      "type": "add_connection",
+      "content": "## Closing the Autoscale Feedback Loop\n\nThe monitoring system emits custom metrics to Kubernetes' Horizontal Pod Autoscaler (HPA). Standard HPA scales on CPU/memory — neither of which is the right signal for GPU inference workloads.\n\n**Custom HPA metrics (via Prometheus Adapter)**:\n- `llm_queue_depth` → scale up when > 50\n- `llm_ttft_p95_ms` → scale up when > 400ms\n- `llm_kv_cache_utilization` → scale up when > 90%\n\n**Scale-down**: Only scale down when ALL three metrics are below threshold for 10 consecutive minutes AND the queue has been empty. Build in hysteresis to prevent thrashing (rapid scale up/down cycles).\n\n**This connection closes the feedback loop**: Monitoring observes system health → emits custom metrics → HPA acts on those metrics → worker count adjusts → system health improves → monitoring observes the improvement."
+    }
+  ],
+  "totalSteps": 25,
+  "phases": [
+    {
+      "name": "Phase 1: Entry Point & Request Handling",
+      "description": "Understand the problem constraints, define the client interface, and build the initial request ingestion layer.",
+      "stepRange": [
+        1,
+        6
+      ]
+    },
+    {
+      "name": "Phase 2: Model Serving Core",
+      "description": "Design the GPU inference pipeline, choose the right engine, and handle the KV cache and model registry.",
+      "stepRange": [
+        7,
+        14
+      ]
+    },
+    {
+      "name": "Phase 3: Scalability & Resource Management",
+      "description": "Define autoscaling triggers, add rate limiting, and introduce response caching to absorb load.",
+      "stepRange": [
+        15,
+        18
+      ]
+    },
+    {
+      "name": "Phase 4: Reliability, Observability & Advanced Optimizations",
+      "description": "Wire up monitoring, persistent quota storage, hot-swap strategy, and autoscale feedback loops.",
+      "stepRange": [
+        19,
+        25
+      ]
+    }
+  ],
+  "problem_id": "ai_001"
+}

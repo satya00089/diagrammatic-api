@@ -1,8 +1,10 @@
 """Service for assessing system design diagrams using AI and rule-based methods."""
 
-from typing import Mapping, TypeAlias, TypedDict, cast
+from typing import Mapping, TypeAlias, cast
+import asyncio
 import json
 import logging
+import math
 import re
 import time
 
@@ -15,21 +17,29 @@ from app.models.reasoning_models import InterviewQuestionsResponse, InterviewRes
 from app.models.response_models import (
     AssessmentSource,
     AssessmentResponse,
+    AssessmentVerdict,
     FeedbackCategory,
     FeedbackType,
     FindingSeverity,
+    FindingKind,
+    IntegrityCheck,
+    RequirementCoverage,
     ReviewFinding,
     ScoreBreakdown,
+    StructuralCheck,
     ValidationFeedback,
 )
 from app.utils.prompts import (
     get_assessment_prompt,
+    get_assessment_evidence_ids,
+    get_assessment_requirement_refs,
     get_interview_prompt,
     get_interview_questions_prompt,
 )
 from app.utils.config import Settings, get_settings
 from app.services.llm_client import create_llm_provider
 from app.services.llm_port import LLMPort, LLMRequest, LLMResponse
+from app.utils.assessment_schema import assessment_response_format
 
 
 logger = logging.getLogger(__name__)
@@ -37,25 +47,29 @@ logger = logging.getLogger(__name__)
 JsonObject: TypeAlias = dict[str, object]
 
 
-class Coverage(TypedDict):
-    """Description-coverage values calculated from a request."""
-
-    comp_pct: float
-    conn_pct: float
-    comp_ok: bool
-    conn_ok: bool
-
-
 class AIAssessorService:
     """Service to assess system design diagrams using AI and rule-based methods."""
+
+    RUBRIC_VERSION = "2.0"
+    ASSESSMENT_TIMEOUT_SECONDS = 45.0
+    MAX_REPAIR_CONTENT_CHARS = 24000
+    MATERIAL_GAP_THRESHOLD = 96
 
     def __init__(
         self,
         llm: LLMPort | None = None,
         settings: Settings | None = None,
+        assessment_timeout_seconds: float | None = None,
     ):
         self.settings = settings or get_settings()
         self.llm = llm or create_llm_provider(self.settings)
+        configured_timeout = getattr(self.settings, "llm_assessment_timeout_seconds", self.ASSESSMENT_TIMEOUT_SECONDS)
+        self.assessment_timeout_seconds = (
+            assessment_timeout_seconds if assessment_timeout_seconds is not None
+            else float(configured_timeout)
+        )
+        if not math.isfinite(self.assessment_timeout_seconds) or self.assessment_timeout_seconds <= 0:
+            raise ValueError("The assessment timeout must be a positive finite number")
 
     async def _generate_json(
         self,
@@ -64,15 +78,16 @@ class AIAssessorService:
         messages: list[dict[str, str]],
         tags: tuple[str, ...] = (),
         metadata: Mapping[str, object] | None = None,
+        response_format: Mapping[str, object] | None = None,
     ) -> LLMResponse:
         """Generate structured content through the provider-neutral port."""
 
         return await self.llm.generate(
             LLMRequest(
                 task=task,
-                messages=messages,
+                messages=list(messages),
                 max_tokens=self.settings.llm_assessment_max_tokens,
-                response_format={"type": "json_object"},
+                response_format=response_format or {"type": "json_object"},
                 temperature=self.settings.llm_temperature,
                 reasoning_effort=self.settings.llm_assessment_reasoning_effort,
                 tags=tags,
@@ -113,152 +128,120 @@ class AIAssessorService:
             raise ValueError("AI response object keys must be strings")
         return {cast(str, key): value for key, value in raw_object.items()}
 
-    def _compute_coverage(self, request: AssessmentRequest) -> Coverage:
-        """Compute description coverage for components and connections."""
-        total_comps = len(request.components)
-        comps_with_desc = sum(
-            1 for c in request.components
-            if self._has_meaningful_description(
-                (c.properties or {}).get("purpose")
-                or (c.properties or {}).get("description", "")
-            )
-        )
-        total_conns = len(request.connections or [])
-        conns_with_desc = sum(
-            1 for conn in (request.connections or [])
-            if self._has_meaningful_description(conn.description)
-        )
-        return {
-            "comp_pct": (comps_with_desc / total_comps * 100) if total_comps else 100,
-            "conn_pct": (conns_with_desc / total_conns * 100) if total_conns else 100,
-            "comp_ok": (comps_with_desc / total_comps >= 0.70) if total_comps else True,
-            "conn_ok": (conns_with_desc / total_conns >= 0.70) if total_conns else True,
-        }
-
-    # ------------------------------------------------------------------
-    # Main assessment entry-point
-    # ------------------------------------------------------------------
-
     async def assess_design(self, request: AssessmentRequest) -> AssessmentResponse:
-        """Assess the system design using AI and fallback to rule-based if needed."""
-        start_time = time.time()
+        """Review with strict output validation and at most one bounded repair."""
+        start_time = time.monotonic()
+        deadline = start_time + self.assessment_timeout_seconds
+        trace_id: str | None = None
+        rejection_reason: str | None = None
+        if any(check.status == "failed" for check in self._integrity_checks(request)):
+            return self._fallback_assessment(request, processing_time_ms=0)
 
-        logger.info(
-            "AI assessment started model=%s max_completion_tokens=%s components=%s "
-            "connections=%s has_problem=%s",
-            self.settings.llm_model,
-            self.settings.llm_assessment_max_tokens,
-            len(request.components),
-            len(request.connections or []),
-            request.problem is not None,
-        )
-
-        # Pre-compute coverage so we can post-filter AI feedback
-        coverage = self._compute_coverage(request)
-
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a precise system-design reviewer. Evaluate published core "
+                    "requirements using submitted evidence. Distinguish defects, "
+                    "clarifications, optional extensions and strengths. Return the "
+                    "requested JSON only, without reference-answer bias or score floors."
+                ),
+            },
+            {"role": "user", "content": get_assessment_prompt(request)},
+        ]
+        problem = request.problem
+        revision = self._requirement_revision(request)
+        metadata: dict[str, object] = {
+            "component_count": len(request.components),
+            "connection_count": len(request.connections or []),
+            "has_problem": problem is not None,
+            "problem_id": problem.id if problem else None,
+            "requirement_revision": revision,
+            "rubric_version": self.RUBRIC_VERSION,
+            "model_version": self._model_version(),
+        }
         try:
-            # Generate structured prompt
-            prompt = get_assessment_prompt(request)
-
-            messages: list[dict[str, str]] = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a senior system architect and technical lead with 15+ years of experience "
-                        "in distributed systems, microservices, and cloud architecture. "
-                        "You provide tough but fair assessments. "
-                        "When the design meets the 70% description-coverage threshold stated in the prompt, "
-                            "do not penalise missing descriptions — focus on architecture quality instead."
+            for attempt in range(2):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Assessment deadline exceeded")
+                response = await asyncio.wait_for(
+                    self._generate_json(
+                        task="assessment.evaluate-design" if attempt == 0 else "assessment.repair-design",
+                        messages=messages,
+                        tags=("assessment", "design") if attempt == 0 else ("assessment", "repair"),
+                        metadata={**metadata, "attempt": attempt, "repair_of_trace_id": trace_id},
+                        response_format=assessment_response_format(self._SCORE_WEIGHTS),
                     ),
-                },
-                {"role": "user", "content": prompt},
-            ]
-            response = await self._generate_json(
-                task="assessment.evaluate-design",
-                messages=messages,
-                tags=("assessment", "design"),
-                metadata={
-                    "component_count": len(request.components),
-                    "connection_count": len(request.connections or []),
-                    "has_problem": request.problem is not None,
-                },
-            )
-
-            # Keep the complete provider payload available during local
-            # debugging. This is intentionally disabled outside debug mode
-            # because the response contains the submitted design context.
-            if self.settings.debug and response.raw is not None:
-                if hasattr(response.raw, "model_dump_json"):
-                    raw_response = response.raw.model_dump_json(indent=2)
-                else:
-                    raw_response = json.dumps(response.raw, default=str, indent=2)
-                logger.debug(
-                    "Raw LLM assessment response:\n%s",
-                    raw_response,
+                    timeout=remaining,
                 )
-
-            content = response.content
-            usage = response.usage
-            reasoning_tokens = usage.reasoning_tokens
-            finish_reason = response.finish_reason
-            refusal_present = response.refusal_present
-
-            logger.info(
-                "AI assessment provider response model=%s finish_reason=%s "
-                "prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s "
-                "content_length=%s refusal_present=%s elapsed_ms=%s",
-                response.model or self.settings.llm_model,
-                finish_reason,
-                usage.prompt_tokens,
-                usage.completion_tokens,
-                reasoning_tokens,
-                len(content or ""),
-                refusal_present,
-                int((time.time() - start_time) * 1000),
-            )
-
-            if not content:
-                raise ValueError(
-                    "AI returned no content "
-                    f"(finish_reason={finish_reason}, refusal_present={refusal_present})"
+                trace_id = response.trace_id or trace_id
+                try:
+                    if response.refusal_present or response.finish_reason in {"length", "content_filter"}:
+                        raise ValueError("Provider returned a refused or incomplete assessment")
+                    assessment = self._transform_ai_response(
+                        self._parse_json_response(response.content), request=request
+                    )
+                except ValueError as error:
+                    # Log a fixed code, never provider content or learner text.
+                    rejection_reason = self._validation_error_code(error)
+                    if attempt == 1:
+                        raise
+                    logger.info("AI assessment output rejected reason=%s; attempting one repair", rejection_reason)
+                    messages.extend([
+                        {
+                            "role": "assistant",
+                            "content": (response.content or "")[:self.MAX_REPAIR_CONTENT_CHARS],
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "The preceding output failed validation: "
+                                + str(error)[:4000]
+                                + "\\nReturn a complete corrected JSON object using the original "
+                                "rubric and submitted evidence. Include all twelve integer scores, "
+                                "the verdict, finding kinds and exact references, and every "
+                                "requirement coverage entry. Every material deduction needs a "
+                                "scored_gap=true defect with criterion, submitted evidence, core "
+                                "requirement reference and actionable recommendation. Clarifications "
+                                "and optional suggestions are unscored. Do not invent evidence to repair an "
+                                "invalid reference or change scores to satisfy an acceptance target. "
+                                "Keep detailed_analysis limited to eight dimension strings. Put strengths, "
+                                "improvements, missing_components, missing_descriptions, unclear_connections, "
+                                "suggestions and interview_questions at the top level, never inside detailed_analysis."
+                            ),
+                        },
+                    ])
+                    continue
+                assessment.trace_id = trace_id
+                assessment.processing_time_ms = int((time.monotonic() - start_time) * 1000)
+                logger.info(
+                    "AI assessment succeeded score=%s verdict=%s rubric=%s revision=%s",
+                    assessment.overall_score, assessment.verdict.value,
+                    assessment.rubric_version, assessment.requirement_revision,
                 )
-
-            # Parse AI response
-            ai_result = self._parse_json_response(content)
-
-            # Transform to response model
-            assessment = self._transform_ai_response(ai_result)
-            assessment.trace_id = response.trace_id
-
-            # Post-process: suppress description feedback when coverage threshold is met
-            assessment = self._filter_description_feedback(assessment, coverage)
-
-            # Calculate processing time
-            processing_time = int((time.time() - start_time) * 1000)
-            assessment.processing_time_ms = processing_time
-
-            logger.info(
-                "AI assessment succeeded score=%s findings=%s elapsed_ms=%s",
-                assessment.overall_score,
-                len(assessment.findings),
-                processing_time,
-            )
-
-            return assessment
-
-        except Exception as e:
+                return assessment
+        except Exception as error:
             logger.warning(
-                "AI assessment failed; using rule-based fallback error_type=%s "
-                "error=%s elapsed_ms=%s",
-                type(e).__name__,
-                str(e)[:500],
-                int((time.time() - start_time) * 1000),
+                "AI assessment unavailable error_type=%s rejection_reason=%s elapsed_ms=%s",
+                type(error).__name__, rejection_reason, int((time.monotonic() - start_time) * 1000),
             )
-            # Fallback to rule-based assessment
-            return self._fallback_assessment(
-                request,
-                processing_time_ms=int((time.time() - start_time) * 1000),
-            )
+
+        fallback = self._fallback_assessment(
+            request, processing_time_ms=int((time.monotonic() - start_time) * 1000)
+        )
+        fallback.trace_id = trace_id
+        try:
+            # The reference checker is deliberately imported and invoked only
+            # after AI failure. It must never influence a successful AI review.
+            from app.services.walkthrough_reference import get_fallback_reference_checks
+
+            checks = await asyncio.wait_for(get_fallback_reference_checks(request), timeout=5.0)
+            fallback.structural_checks = [StructuralCheck.model_validate(check) for check in checks]
+        except Exception as error:
+            logger.warning("Fallback reference checks unavailable error_type=%s", type(error).__name__)
+        fallback.processing_time_ms = int((time.monotonic() - start_time) * 1000)
+        return fallback
 
     async def generate_interview_questions(
         self, request: InterviewQuestionsRequest
@@ -342,61 +325,7 @@ class AIAssessorService:
             nextQuestion=next_question.strip() if isinstance(next_question, str) else None,
         )
 
-    # ------------------------------------------------------------------
-    # Post-processing
-    # ------------------------------------------------------------------
-
-    _DESC_KEYWORDS = (
-        "description", "no description", "missing description", "undefined purpose",
-        "unclear purpose", "purpose unclear", "lacks description", "lacks detail",
-        "component purpose", "add descriptions", "provide descriptions",
-        "component documentation", "component_justification",
-    )
-    _CONN_KEYWORDS = (
-        "connection description", "connection label", "connection reasoning",
-        "connection clarity", "unclear connection", "missing connection description",
-        "add descriptions to connection", "connection lacks",
-    )
-
-    def _filter_description_feedback(
-        self, assessment: AssessmentResponse, coverage: Coverage
-    ) -> AssessmentResponse:
-        """Remove or demote description-related feedback when coverage ≥ 70%."""
-        comp_ok: bool = coverage["comp_ok"]
-        conn_ok: bool = coverage["conn_ok"]
-
-        if not (comp_ok or conn_ok):
-            return assessment  # nothing to suppress
-
-        def _matches_keywords(message: str, keywords: tuple[str, ...]) -> bool:
-            lower = message.lower()
-            return any(keyword in lower for keyword in keywords)
-
-        def _keep_feedback(fb: ValidationFeedback) -> bool:
-            component_feedback = fb.category == "component_description" or (
-                _matches_keywords(fb.message, self._DESC_KEYWORDS)
-            )
-            connection_feedback = fb.category == "connection_reasoning" or (
-                _matches_keywords(fb.message, self._CONN_KEYWORDS)
-            )
-            return not ((comp_ok and component_feedback) or (conn_ok and connection_feedback))
-
-        def _keep_text(msg: str) -> bool:
-            return not (
-                (comp_ok and _matches_keywords(msg, self._DESC_KEYWORDS))
-                or (conn_ok and _matches_keywords(msg, self._CONN_KEYWORDS))
-            )
-
-        assessment.feedback = [fb for fb in assessment.feedback if _keep_feedback(fb)]
-        assessment.improvements = [i for i in assessment.improvements if _keep_text(i)]
-        if comp_ok:
-            assessment.missing_descriptions = []
-        if conn_ok:
-            assessment.unclear_connections = []
-        return assessment
-
-    # Scoring weights by dimension importance.
-    # Architecture-critical dims carry more weight than documentation dims.
+    # Fixed denominator: all dimensions remain present for every AI review.
     _SCORE_WEIGHTS: dict[str, float] = {
         "scalability": 2.0,
         "reliability": 2.0,
@@ -412,170 +341,295 @@ class AIAssessorService:
         "connection_clarity": 0.75,
     }
 
-    def _transform_ai_response(self, ai_result: JsonObject) -> AssessmentResponse:
-        # Transform AI JSON response to Pydantic model
-        raw_scores = ai_result.get("scores", {})
-        if not isinstance(raw_scores, Mapping):
-            raise ValueError("AI response field 'scores' must be an object")
-        scores = ScoreBreakdown.model_validate(cast(Mapping[str, object], raw_scores))
+    @staticmethod
+    def _validation_error_code(error: ValueError) -> str:
+        from pydantic import ValidationError
+        if isinstance(error, json.JSONDecodeError):
+            return "invalid_json"
+        if isinstance(error, ValidationError):
+            return "invalid_schema"
+        message = str(error)
+        for prefix, code in (
+            ("Material score deductions", "ungrounded_deduction"),
+            ("Requirement coverage", "incomplete_coverage"),
+            ("Finding contains unknown", "invalid_finding_reference"),
+            ("Coverage contains unknown", "invalid_coverage_reference"),
+            ("Strong alignment", "inconsistent_verdict"),
+            ("Provider returned", "incomplete_provider_output"),
+        ):
+            if message.startswith(prefix):
+                return code
+        return "invalid_contract"
 
-        raw_feedback = ai_result.get("feedback", [])
-        if not isinstance(raw_feedback, list):
-            raise ValueError("AI response field 'feedback' must be a list")
-        feedback = [
-            ValidationFeedback.model_validate(item)
-            for item in cast(list[object], raw_feedback)
+    @staticmethod
+    def _requirement_revision(request: AssessmentRequest) -> str | None:
+        if not request.problem:
+            return None
+        if request.problem.requirementSpec:
+            return request.problem.requirementSpec.revision
+        return request.problem.requirementRevision
+
+    def _model_version(self) -> str | None:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return None
+        if settings.llm_provider == "azure_openai":
+            return settings.azure_openai_deployment or settings.llm_model
+        return settings.llm_model
+
+    @staticmethod
+    def _integrity_checks(request: AssessmentRequest) -> list[IntegrityCheck]:
+        component_ids = [component.id for component in request.components]
+        connections = request.connections or []
+        all_ids = component_ids + [connection.id for connection in connections]
+        valid_ids = bool(all_ids) and all(identifier.strip() for identifier in all_ids)
+        unique = valid_ids and len(all_ids) == len(set(all_ids))
+        dangling = [
+            connection.id for connection in connections
+            if connection.source not in component_ids or connection.target not in component_ids
+        ]
+        return [
+            IntegrityCheck(
+                check="components_present",
+                status="passed" if component_ids else "failed",
+                explanation=f"{len(component_ids)} components supplied.",
+                evidence_ids=component_ids,
+            ),
+            IntegrityCheck(
+                check="unique_identifiers",
+                status="passed" if unique else "failed",
+                explanation="Component and connection IDs are nonempty and unique."
+                if unique else "Some component or connection IDs are empty or duplicated.",
+                evidence_ids=[] if unique else all_ids,
+            ),
+            IntegrityCheck(
+                check="connection_endpoints",
+                status="failed" if dangling else "passed",
+                explanation="Every supplied connection refers to supplied components."
+                if not dangling else "Some connections refer to components absent from this request.",
+                evidence_ids=dangling,
+            ),
         ]
 
-        # Weighted average: architecture-critical dims outweigh documentation dims
-        weighted_sum = 0.0
-        total_weight = 0.0
-        for field, weight in self._SCORE_WEIGHTS.items():
-            val = getattr(scores, field, None)
-            if val is not None:
-                weighted_sum += val * weight
-                total_weight += weight
+    def _validate_grounding(
+        self, assessment: AssessmentResponse, request: AssessmentRequest
+    ) -> None:
+        evidence_ids = get_assessment_evidence_ids(request)
+        spec = request.problem.requirementSpec if request.problem else None
+        requirements = {
+            item.id: item for item in spec.functional + spec.nonFunctional
+        } if spec else {}
+        requirement_refs = get_assessment_requirement_refs(request)
+        coverage = assessment.requirement_coverage
+        # Legacy anchors preserve the exact brief without pretending it is a
+        # typed specification. A model may return no legacy coverage or a full
+        # grounded map; never reject a complete legacy map as unknown scope.
+        if spec is None and coverage:
+            requirements = requirement_refs
+        coverage_ids = [item.requirement_id for item in coverage]
+        if len(coverage_ids) != len(set(coverage_ids)) or set(coverage_ids) != set(requirements):
+            raise ValueError("Requirement coverage must contain every supplied requirement ID exactly once")
+        missing_core = {
+            item.requirement_id for item in coverage
+            if item.status == "missing" and requirements[item.requirement_id].scope == "core"
+        }
 
-        overall_score = round(weighted_sum / total_weight) if total_weight else 0
-        overall_score = max(0, min(100, overall_score))
+        for item in coverage:
+            if not set(item.evidence_ids) <= evidence_ids:
+                raise ValueError("Coverage contains unknown evidence IDs")
+            if item.status in {"supported", "partial"} and not item.evidence_ids:
+                raise ValueError("Supported or partial coverage requires submitted evidence")
 
-        def string_list(field: str) -> list[str]:
-            value = ai_result.get(field, [])
-            if not isinstance(value, list):
-                return []
-            return [
-                item
-                for item in cast(list[object], value)
-                if isinstance(item, str)
-            ]
+        for finding in assessment.findings:
+            if not set(finding.evidence_ids) <= evidence_ids:
+                raise ValueError("Finding contains unknown evidence IDs")
+            if not set(finding.requirement_ids) <= set(requirement_refs):
+                raise ValueError("Finding contains unknown requirement IDs")
+            if finding.criterion is not None and finding.criterion not in self._SCORE_WEIGHTS:
+                raise ValueError("Finding criterion must be a rubric dimension")
+            if finding.kind == FindingKind.DEFECT:
+                if not finding.criterion:
+                    raise ValueError("A scored defect must name an applicable rubric criterion")
+                if not finding.evidence_ids and not set(finding.requirement_ids) & missing_core:
+                    raise ValueError("A defect needs submitted evidence or a missing core requirement")
+                if finding.requirement_ids and all(
+                    requirement_refs[identifier].scope == "extension" for identifier in finding.requirement_ids
+                ):
+                    raise ValueError("An extension-only gap cannot be a required-scope defect")
+            if finding.kind == FindingKind.STRENGTH and not finding.evidence_ids:
+                raise ValueError("A strength must cite submitted evidence")
+            if finding.kind != FindingKind.DEFECT and (finding.scored_gap or finding.criterion is not None):
+                raise ValueError("Strengths, clarifications and optional extensions cannot justify deductions")
+            if finding.scored_gap:
+                if finding.kind != FindingKind.DEFECT or not finding.criterion:
+                    raise ValueError("A scored_gap must be a defect with an applicable rubric criterion")
+                if not finding.evidence_ids or not any(
+                    requirement_refs[identifier].scope == "core" for identifier in finding.requirement_ids
+                ):
+                    raise ValueError("A scored_gap requires submitted evidence and a core requirement reference")
+                if not finding.recommendation or not finding.recommendation.strip():
+                    raise ValueError("A scored_gap requires an actionable recommendation")
 
-        detailed_analysis = ai_result.get("detailed_analysis")
-        if isinstance(detailed_analysis, dict):
-            raw_analysis = cast(dict[object, object], detailed_analysis)
-            detailed_analysis = {
-                key: value
-                for key, value in raw_analysis.items()
-                if isinstance(key, str) and isinstance(value, str)
-            }
-        else:
-            detailed_analysis = None
+        justified_dimensions = {finding.criterion for finding in assessment.findings if finding.scored_gap}
+        unexplained = [
+            dimension for dimension in self._SCORE_WEIGHTS
+            if getattr(assessment.scores, dimension) < self.MATERIAL_GAP_THRESHOLD
+            and dimension not in justified_dimensions
+        ]
+        if unexplained:
+            raise ValueError(
+                "Material score deductions require scored_gap findings with criterion, evidence, "
+                "core requirement link and action: " + ", ".join(unexplained)
+            )
 
-        raw_findings = ai_result.get("findings", [])
+        core_coverage = [
+            item for item in coverage if requirements[item.requirement_id].scope == "core"
+        ]
+        if assessment.verdict == AssessmentVerdict.STRONG_ALIGNMENT and any(
+            item.status != "supported" for item in core_coverage
+        ):
+            raise ValueError("Strong alignment requires supported core requirement coverage")
+        if assessment.verdict == AssessmentVerdict.MORE_CONTEXT_NEEDED and not (
+            any(item.status == "needs_clarification" for item in core_coverage)
+            or any(finding.kind == FindingKind.CLARIFICATION for finding in assessment.findings)
+        ):
+            raise ValueError("More context needed requires an unresolved clarification")
+        if assessment.verdict == AssessmentVerdict.NEEDS_REVISION and not (
+            any(item.status in {"partial", "missing"} for item in core_coverage)
+            or any(finding.kind == FindingKind.DEFECT for finding in assessment.findings)
+        ):
+            raise ValueError("Needs revision requires a defect or a core coverage gap")
+
+    def _transform_ai_response(
+        self, ai_result: JsonObject, request: AssessmentRequest | None = None
+    ) -> AssessmentResponse:
+        """Validate AI output, preserving legacy response fields but no partial grades."""
+        raw_scores = ai_result.get("scores")
+        if not isinstance(raw_scores, dict) or set(raw_scores) != set(self._SCORE_WEIGHTS):
+            raise ValueError("AI response must include exactly all twelve rubric scores")
+        if any(type(value) is not int for value in raw_scores.values()):
+            raise ValueError("All rubric scores must be integers, not null, booleans or strings")
+        scores = ScoreBreakdown.model_validate(raw_scores)
+        overall_score = round(
+            sum(raw_scores[field] * weight for field, weight in self._SCORE_WEIGHTS.items())
+            / sum(self._SCORE_WEIGHTS.values())
+        )
+
+        raw_findings = ai_result.get("findings")
         if not isinstance(raw_findings, list):
             raise ValueError("AI response field 'findings' must be a list")
-        findings = [
-            ReviewFinding.model_validate(item)
-            for item in cast(list[object], raw_findings)
-        ]
+        for item in raw_findings:
+            if not isinstance(item, dict) or not {"kind", "evidence_ids", "requirement_ids"} <= set(item):
+                raise ValueError("Each AI finding must include kind, evidence_ids and requirement_ids")
+        findings = [ReviewFinding.model_validate(item) for item in raw_findings]
+        verdict = AssessmentVerdict(ai_result.get("verdict"))
+        if verdict == AssessmentVerdict.UNAVAILABLE:
+            raise ValueError("Unavailable AI output cannot carry an architecture score")
 
-        summary = ai_result.get("summary")
-        if summary is not None and not isinstance(summary, str):
-            raise ValueError("AI response field 'summary' must be a string")
+        for finding in findings:
+            if (finding.kind == FindingKind.STRENGTH) != (finding.severity == FindingSeverity.POSITIVE):
+                raise ValueError("Positive severity and strength kind must agree")
+            if finding.kind == FindingKind.EXTENSION and finding.severity != FindingSeverity.IMPROVEMENT:
+                raise ValueError("Optional extensions must use improvement severity")
+            if finding.kind == FindingKind.CLARIFICATION and finding.severity == FindingSeverity.CRITICAL:
+                raise ValueError("Unknown decisions cannot be critical demonstrated defects")
+        critical = any(finding.severity == FindingSeverity.CRITICAL for finding in findings)
+        if critical and verdict != AssessmentVerdict.NEEDS_REVISION:
+            raise ValueError("A critical finding requires a needs_revision verdict")
+        if verdict == AssessmentVerdict.STRONG_ALIGNMENT and (
+            overall_score < 50 or any(finding.kind in {FindingKind.DEFECT, FindingKind.CLARIFICATION} for finding in findings)
+        ):
+            raise ValueError("Strong alignment conflicts with unresolved defects, clarifications or low scores")
 
-        return AssessmentResponse(
-            is_valid=overall_score >= 50,
+        if "requirement_coverage" not in ai_result:
+            raise ValueError("AI output must include requirement_coverage")
+        assessment = AssessmentResponse(
+            is_valid=verdict == AssessmentVerdict.STRONG_ALIGNMENT and not critical,
             overall_score=overall_score,
+            score_available=True,
+            verdict=verdict,
             scores=scores,
-            feedback=feedback,
-            summary=summary,
+            feedback=ai_result.get("feedback", []),
+            summary=ai_result.get("summary"),
             findings=findings,
-            strengths=string_list("strengths"),
-            improvements=string_list("improvements"),
-            missing_components=string_list("missing_components"),
-            missing_descriptions=string_list("missing_descriptions"),
-            unclear_connections=string_list("unclear_connections"),
-            suggestions=string_list("suggestions"),
-            detailed_analysis=detailed_analysis,
-            interview_questions=string_list("interview_questions"),
+            requirement_coverage=ai_result["requirement_coverage"],
+            strengths=ai_result.get("strengths", []),
+            improvements=ai_result.get("improvements", []),
+            missing_components=ai_result.get("missing_components", []),
+            missing_descriptions=ai_result.get("missing_descriptions", []),
+            unclear_connections=ai_result.get("unclear_connections", []),
+            suggestions=ai_result.get("suggestions", []),
+            detailed_analysis=ai_result.get("detailed_analysis"),
+            interview_questions=ai_result.get("interview_questions", []),
+            rubric_version=self.RUBRIC_VERSION,
+            requirement_revision=self._requirement_revision(request) if request else None,
+            problem_id=request.problem.id if request and request.problem else None,
+            model_version=self._model_version(),
             source=AssessmentSource.AI,
         )
+        if request is not None:
+            self._validate_grounding(assessment, request)
+        return assessment
 
     def _fallback_assessment(
         self,
         request: AssessmentRequest,
         processing_time_ms: int | None = None,
     ) -> AssessmentResponse:
-        # Simple rule-based fallback when AI fails
-        component_count = len(request.components)
-        has_database = any(c.type == "database" for c in request.components)
-        has_load_balancer = any(c.type == "load-balancer" for c in request.components)
-
-        # Check for component descriptions
-        components_with_descriptions = sum(
-            1
-            for c in request.components
-            if c.properties and (
-                c.properties.get("purpose")
-                or c.properties.get("description", "")
-            ).strip()
-        )
-        description_score = min(components_with_descriptions * 20, 80)
-
-        base_score = min(component_count * 15, 60)
-        if has_database:
-            base_score += 10
-        if has_load_balancer:
-            base_score += 15
-
-        # Create list of components missing descriptions (strip HTML before checking)
-        missing_descriptions = [
-            c.label
-            for c in request.components
-            if not self._has_meaningful_description(
-                (c.properties or {}).get("purpose")
-                or (c.properties or {}).get("description", "")
-            )
-        ]
-
+        """Report only observed integrity; zeros are legacy placeholders, not grades."""
+        spec = request.problem.requirementSpec if request.problem else None
+        requirements = spec.functional + spec.nonFunctional if spec else []
         return AssessmentResponse(
-            is_valid=base_score >= 50,
-            overall_score=base_score,
-            scores=ScoreBreakdown(
-                scalability=base_score,
-                reliability=base_score,
-                security=max(base_score - 20, 20),
-                maintainability=base_score,
-                component_justification=description_score,
-                connection_clarity=50 if request.connections else 20,
-            ),
+            is_valid=False,
+            overall_score=0,
+            score_available=False,
+            verdict=AssessmentVerdict.UNAVAILABLE,
+            scores=ScoreBreakdown(**{field: 0 for field in self._SCORE_WEIGHTS}),
             feedback=[
                 ValidationFeedback(
                     type=FeedbackType.WARNING,
-                    message="AI assessment is temporarily unavailable; a rule-based assessment was used instead.",
+                    message="AI review is unavailable. Only basic diagram integrity checks were performed; no architecture score is available.",
                     category=FeedbackCategory.MAINTAINABILITY,
                 )
             ],
             summary=(
-                "The AI reviewer was unavailable, so this result is a basic structural check "
-                "of the diagram rather than a full architecture review."
+                "AI review is unavailable. This is a basic structural check of submitted "
+                "identifiers and endpoints, not an architecture assessment. Numeric fields "
+                "are compatibility placeholders, not design feedback."
             ),
             findings=[
                 ReviewFinding(
                     title="Full architecture review unavailable",
-                    explanation=(
-                        "This assessment could not evaluate the design against the problem context "
-                        "and production failure modes with the AI reviewer."
-                    ),
-                    recommendation=(
-                        "Retry the assessment when the review service is available before treating "
-                        "this score as design feedback."
-                    ),
+                    explanation="The design has not been evaluated against required scope.",
+                    recommendation="Retry the AI review when the service is available.",
                     severity=FindingSeverity.IMPORTANT,
+                    kind=FindingKind.CLARIFICATION,
                 )
             ],
-            strengths=["Basic architecture components present"],
-            improvements=[
-                "Add detailed component documentation and connection reasoning"
+            requirement_coverage=[
+                RequirementCoverage(
+                    requirement_id=item.id,
+                    status="needs_clarification",
+                    explanation="Not evaluated because the AI review is unavailable.",
+                ) for item in requirements
             ],
+            integrity_checks=self._integrity_checks(request),
+            strengths=[],
+            improvements=[],
             missing_components=[],
-            missing_descriptions=missing_descriptions,
-            unclear_connections=(
-                [] if request.connections else ["No connections defined"]
-            ),
-            suggestions=[
-                "Consider adding monitoring and caching layers",
-                "Provide detailed component descriptions",
+            missing_descriptions=[
+                component.label for component in request.components
+                if not self._has_meaningful_description(
+                    (component.properties or {}).get("purpose")
+                    or (component.properties or {}).get("description", "")
+                )
             ],
+            unclear_connections=[],
+            suggestions=["Retry the AI review."],
             processing_time_ms=processing_time_ms,
+            rubric_version=self.RUBRIC_VERSION,
+            requirement_revision=self._requirement_revision(request),
+            problem_id=request.problem.id if request.problem else None,
+            model_version=self._model_version(),
             source=AssessmentSource.RULE_BASED,
         )

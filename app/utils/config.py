@@ -30,6 +30,10 @@ class Settings(BaseSettings):
             "LLM_ASSESSMENT_MAX_TOKENS", "OPENAI_ASSESSMENT_MAX_TOKENS"
         ),
     )
+    llm_assessment_timeout_seconds: float = Field(
+        45.0, gt=0, allow_inf_nan=False,
+        validation_alias="LLM_ASSESSMENT_TIMEOUT_SECONDS",
+    )
     llm_assessment_reasoning_effort: Literal[
         "none", "low", "medium", "high", "xhigh", "max"
     ] = Field(
