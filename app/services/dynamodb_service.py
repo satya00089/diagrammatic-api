@@ -334,7 +334,8 @@ class DynamoDBService:
         try:
             response = self.users_table.update_item(
                 Key={"id": user_id},
-                UpdateExpression="SET roles = :roles, updatedAt = :updated",
+                UpdateExpression="SET #roles = :roles, updatedAt = :updated",
+                ExpressionAttributeNames={"#roles": "roles"},
                 ExpressionAttributeValues={
                     ":roles": roles,
                     DDB_UPDATED_VALUE: datetime.now(timezone.utc).isoformat(),
