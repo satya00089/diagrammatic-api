@@ -6,9 +6,11 @@ from datetime import date, timedelta
 from typing import Annotated, Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from starlette.concurrency import run_in_threadpool
 
 from app.models.admin_models import (
     AdminAccessUser,
+    AdminGoogleAnalyticsReport,
     AdminFeedbackItem,
     AdminOverviewResponse,
     GrantAdminRequest,
@@ -20,6 +22,7 @@ from app.services.admin_access import (
     is_super_admin_user,
 )
 from app.services.dynamodb_service import dynamodb_service
+from app.services.google_analytics_service import get_google_analytics_report
 from app.services.s3_analytics_aggregator import s3_analytics_aggregator
 
 router = APIRouter()
@@ -81,6 +84,17 @@ async def get_admin_overview(
         feedback=feedback_summary,
         recentFeedback=[_feedback_item(item, user_cache) for item in feedback[:12]],
     )
+
+
+@router.get(
+    "/admin/google-analytics", response_model=AdminGoogleAnalyticsReport
+)
+async def get_admin_google_analytics(
+    _admin_user=Depends(require_super_admin),
+    days: int = Query(30, ge=7, le=90),
+) -> AdminGoogleAnalyticsReport:
+    report = await run_in_threadpool(get_google_analytics_report, days)
+    return AdminGoogleAnalyticsReport.model_validate(report)
 
 
 @router.get("/admin/access", response_model=List[AdminAccessUser])
