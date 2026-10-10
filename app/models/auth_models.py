@@ -53,6 +53,8 @@ class UserResponse(BaseModel):
     name: Optional[str] = None
     picture: Optional[str] = None
     preferences: Optional[Dict[str, Any]] = None
+    roles: List[str] = Field(default_factory=list)
+    isSuperAdmin: bool = False
     emailVerified: bool = False
     createdAt: str
 
@@ -86,6 +88,7 @@ class User(BaseModel):
     picture: Optional[str] = None
     googleId: Optional[str] = None
     preferences: Optional[Dict[str, Any]] = None
+    roles: List[str] = Field(default_factory=list)
     emailVerified: bool = False
     verificationTokenHash: Optional[str] = None
     verificationExpiresAt: Optional[str] = None

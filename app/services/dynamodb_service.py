@@ -329,6 +329,39 @@ class DynamoDBService:
             print(f"Error updating user preferences: {e}")
             return None
 
+    def update_user_roles(self, user_id: str, roles: List[str]) -> Optional[User]:
+        """Replace the persisted application roles for one user."""
+        try:
+            response = self.users_table.update_item(
+                Key={"id": user_id},
+                UpdateExpression="SET roles = :roles, updatedAt = :updated",
+                ExpressionAttributeValues={
+                    ":roles": roles,
+                    DDB_UPDATED_VALUE: datetime.now(timezone.utc).isoformat(),
+                },
+                ReturnValues="ALL_NEW",
+            )
+            item = response.get("Attributes")
+            return User.model_validate(cast(Dict[str, Any], item)) if item else None
+        except ClientError as e:
+            print(f"Error updating user roles: {e}")
+            return None
+
+    def list_users_with_role(self, role: str) -> List[User]:
+        """Return users carrying a role, handling DynamoDB scan pagination."""
+        users: List[User] = []
+        scan_kwargs: Dict[str, Any] = {
+            "FilterExpression": Attr("roles").contains(role),
+        }
+        while True:
+            response = self.users_table.scan(**scan_kwargs)
+            users.extend(User.model_validate(item) for item in response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last_key
+        return users
+
     def get_user_by_google_id(self, google_id: str) -> Optional[User]:
         """Get user by Google ID using GSI."""
         try:
@@ -380,6 +413,56 @@ class DynamoDBService:
             ConditionExpression="attribute_not_exists(id)",
         )
         return FeedbackResponse(id=feedback_id, createdAt=now)
+
+    def list_feedback(self, limit: int = 250) -> List[Dict[str, Any]]:
+        """Read recent feedback for the protected admin surface."""
+        items: List[Dict[str, Any]] = []
+        scan_kwargs: Dict[str, Any] = {}
+        while len(items) < limit:
+            response = self.feedback_table.scan(**scan_kwargs)
+            items.extend(response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last_key
+        return sorted(items[:limit], key=lambda item: item.get("createdAt", ""), reverse=True)
+
+    @staticmethod
+    def summarize_feedback(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        ratings = [int(item["rating"]) for item in items if item.get("rating") is not None]
+        helpful_values = [item["helpful"] for item in items if item.get("helpful") is not None]
+        categories: Dict[str, int] = {}
+        for item in items:
+            category = str(item.get("category", "other"))
+            categories[category] = categories.get(category, 0) + 1
+        return {
+            "total": len(items),
+            "new": sum(1 for item in items if item.get("status", "new") == "new"),
+            "averageRating": round(sum(ratings) / len(ratings), 2) if ratings else None,
+            "helpfulRate": round(sum(1 for value in helpful_values if value) / len(helpful_values), 3)
+            if helpful_values
+            else None,
+            "categories": categories,
+        }
+
+    def update_feedback_status(self, feedback_id: str, feedback_status: str) -> Optional[Dict[str, Any]]:
+        """Update only the admin triage state of a feedback item."""
+        try:
+            response = self.feedback_table.update_item(
+                Key={"id": feedback_id},
+                UpdateExpression="SET #status = :status, updatedAt = :updated",
+                ConditionExpression="attribute_exists(id)",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":status": feedback_status,
+                    ":updated": datetime.now(timezone.utc).isoformat(),
+                },
+                ReturnValues="ALL_NEW",
+            )
+            return response.get("Attributes")
+        except ClientError as e:
+            print(f"Error updating feedback status: {e}")
+            return None
 
     def update_user_google_id(
         self, user_id: str, google_id: str, picture: Optional[str] = None

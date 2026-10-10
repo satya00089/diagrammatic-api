@@ -9,7 +9,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import boto3
@@ -203,6 +203,41 @@ class RedisAnalyticsAggregator:
             return flushed
         finally:
             self._redis.delete(lock_key)
+
+    def summarize_date_range(self, from_date: str, to_date: str) -> Dict[str, Any]:
+        """Read daily snapshots without exposing pseudonymous session keys."""
+        start = datetime.fromisoformat(from_date).date()
+        end = datetime.fromisoformat(to_date).date()
+        daily: List[Dict[str, Any]] = []
+        event_totals: Dict[str, int] = {}
+        route_totals: Dict[str, int] = {}
+        total_events = 0
+        cursor = start
+        while cursor <= end:
+            date_key = cursor.isoformat()
+            snapshot, _etag = self._get_existing(self._s3_key(date_key))
+            day_events = int(snapshot.get("total_events", 0))
+            total_events += day_events
+            for event_name, routes in snapshot.get("events", {}).items():
+                event_total = sum(int(value) for value in routes.values())
+                event_totals[event_name] = event_totals.get(event_name, 0) + event_total
+                for route, value in routes.items():
+                    route_totals[route] = route_totals.get(route, 0) + int(value)
+            daily.append({"date": date_key, "events": day_events})
+            cursor += timedelta(days=1)
+        return {
+            "totalEvents": total_events,
+            "pageViews": event_totals.get("page_view", 0),
+            "daily": daily,
+            "topEvents": [
+                {"name": name, "count": count}
+                for name, count in sorted(event_totals.items(), key=lambda pair: pair[1], reverse=True)[:8]
+            ],
+            "topRoutes": [
+                {"route": route, "count": count}
+                for route, count in sorted(route_totals.items(), key=lambda pair: pair[1], reverse=True)[:8]
+            ],
+        }
 
 
 redis_analytics_aggregator = RedisAnalyticsAggregator()
