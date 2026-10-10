@@ -55,6 +55,18 @@ class GoogleAnalyticsChannelGroup(BaseModel):
     sessions: int = 0
 
 
+class GoogleAnalyticsReferralSource(BaseModel):
+    sourceMedium: str
+    sessions: int = 0
+
+
+class GoogleAnalyticsCity(BaseModel):
+    country: str
+    region: str
+    city: str
+    sessions: int = 0
+
+
 class AdminGoogleAnalyticsReport(BaseModel):
     status: Literal["not_configured", "connected", "error"]
     propertyId: Optional[str] = None
@@ -63,6 +75,10 @@ class AdminGoogleAnalyticsReport(BaseModel):
     sessions: Optional[int] = None
     screenPageViews: Optional[int] = None
     channelGroups: List[GoogleAnalyticsChannelGroup] = Field(default_factory=list)
+    referralSources: List[GoogleAnalyticsReferralSource] = Field(
+        default_factory=list
+    )
+    cities: List[GoogleAnalyticsCity] = Field(default_factory=list)
     message: Optional[str] = None
 
 
