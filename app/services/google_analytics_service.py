@@ -20,10 +20,13 @@ logger = logging.getLogger(__name__)
 ANALYTICS_READONLY_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 GA_DATA_API_URL = (
     "https://analyticsdata.googleapis.com/v1beta/properties/"
-    "{property_id}:runReport"
+    "{property_id}:batchRunReports"
 )
 REPORT_TIMEOUT_SECONDS = 15
 METRIC_NAMES = ("activeUsers", "newUsers", "sessions", "screenPageViews")
+MAX_CHANNEL_GROUPS = 5
+MAX_REFERRAL_SOURCES = 8
+MAX_CITIES = 10
 
 
 class GoogleAnalyticsApiError(Exception):
@@ -41,20 +44,22 @@ def _authorized_http(credentials: Any) -> google_auth_httplib2.AuthorizedHttp:
     )
 
 
-def _run_report(
+def _run_reports(
     http: google_auth_httplib2.AuthorizedHttp,
     property_id: str,
-    request_body: Dict[str, Any],
-) -> Dict[str, Any]:
+    requests: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     response, content = http.request(
         GA_DATA_API_URL.format(property_id=property_id),
         method="POST",
-        body=json.dumps(request_body),
+        body=json.dumps({"requests": requests}),
         headers={"Content-Type": "application/json"},
     )
     if response.status < 200 or response.status >= 300:
         raise GoogleAnalyticsApiError(response.status)
-    return json.loads(content.decode("utf-8"))
+    result = json.loads(content.decode("utf-8"))
+    reports = result.get("reports", [])
+    return reports if isinstance(reports, list) else []
 
 
 def _metric_value(row: Dict[str, Any] | None, index: int) -> int:
@@ -69,18 +74,45 @@ def _metric_value(row: Dict[str, Any] | None, index: int) -> int:
         return 0
 
 
+def _dimension_value(row: Dict[str, Any], index: int) -> str:
+    values = row.get("dimensionValues", [])
+    if index >= len(values):
+        return "(not set)"
+    return values[index].get("value") or "(not set)"
+
+
 def _channel_groups(report: Dict[str, Any]) -> List[Dict[str, Any]]:
     groups = []
     for row in report.get("rows", []):
-        dimensions = row.get("dimensionValues", [])
-        name = dimensions[0].get("value", "Unassigned") if dimensions else "Unassigned"
         groups.append(
             {
-                "name": name or "Unassigned",
+                "name": _dimension_value(row, 0),
                 "sessions": _metric_value(row, 0),
             }
         )
     return groups
+
+
+def _referral_sources(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "sourceMedium": _dimension_value(row, 1),
+            "sessions": _metric_value(row, 0),
+        }
+        for row in report.get("rows", [])
+    ]
+
+
+def _cities(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "country": _dimension_value(row, 0),
+            "region": _dimension_value(row, 1),
+            "city": _dimension_value(row, 2),
+            "sessions": _metric_value(row, 0),
+        }
+        for row in report.get("rows", [])
+    ]
 
 
 def _error_report(
@@ -170,26 +202,58 @@ def get_google_analytics_report(
             "startDate": f"{days - 1}daysAgo",
             "endDate": "today",
         }
-        totals = _run_report(
+        reports = _run_reports(
             http,
             property_id,
-            {
-                "dateRanges": [date_range],
-                "metrics": [{"name": name} for name in METRIC_NAMES],
-            },
-        )
-        channels = _run_report(
-            http,
-            property_id,
-            {
-                "dateRanges": [date_range],
-                "dimensions": [{"name": "sessionDefaultChannelGroup"}],
-                "metrics": [{"name": "sessions"}],
-                "orderBys": [
-                    {"metric": {"metricName": "sessions"}, "desc": True}
-                ],
-                "limit": "5",
-            },
+            [
+                {
+                    "dateRanges": [date_range],
+                    "metrics": [{"name": name} for name in METRIC_NAMES],
+                },
+                {
+                    "dateRanges": [date_range],
+                    "dimensions": [{"name": "sessionDefaultChannelGroup"}],
+                    "metrics": [{"name": "sessions"}],
+                    "orderBys": [
+                        {"metric": {"metricName": "sessions"}, "desc": True}
+                    ],
+                    "limit": str(MAX_CHANNEL_GROUPS),
+                },
+                {
+                    "dateRanges": [date_range],
+                    "dimensions": [
+                        {"name": "sessionDefaultChannelGroup"},
+                        {"name": "sessionSourceMedium"},
+                    ],
+                    "dimensionFilter": {
+                        "filter": {
+                            "fieldName": "sessionDefaultChannelGroup",
+                            "stringFilter": {
+                                "matchType": "EXACT",
+                                "value": "Referral",
+                            },
+                        }
+                    },
+                    "metrics": [{"name": "sessions"}],
+                    "orderBys": [
+                        {"metric": {"metricName": "sessions"}, "desc": True}
+                    ],
+                    "limit": str(MAX_REFERRAL_SOURCES),
+                },
+                {
+                    "dateRanges": [date_range],
+                    "dimensions": [
+                        {"name": "country"},
+                        {"name": "region"},
+                        {"name": "city"},
+                    ],
+                    "metrics": [{"name": "sessions"}],
+                    "orderBys": [
+                        {"metric": {"metricName": "sessions"}, "desc": True}
+                    ],
+                    "limit": str(MAX_CITIES),
+                },
+            ],
         )
     except GoogleAnalyticsApiError as exc:
         logger.warning(
@@ -219,6 +283,7 @@ def get_google_analytics_report(
             property_id,
         )
 
+    totals, channels, referrals, cities = (reports + [{}, {}, {}, {}])[:4]
     rows = totals.get("rows", [])
     total_row = rows[0] if rows else None
     return {
@@ -229,5 +294,7 @@ def get_google_analytics_report(
         "sessions": _metric_value(total_row, 2),
         "screenPageViews": _metric_value(total_row, 3),
         "channelGroups": _channel_groups(channels),
+        "referralSources": _referral_sources(referrals),
+        "cities": _cities(cities),
         "message": None,
     }

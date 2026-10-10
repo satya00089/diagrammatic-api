@@ -17,36 +17,61 @@ def test_report_returns_setup_state_when_property_is_missing() -> None:
 
 
 def test_report_maps_ga_metrics_and_channel_groups(monkeypatch) -> None:
-    responses = [
-        {
-            "rows": [
-                {
-                    "metricValues": [
-                        {"value": value}
-                        for value in ("120", "35", "180", "410")
-                    ]
-                }
-            ]
-        },
-        {
-            "rows": [
-                {
-                    "dimensionValues": [{"value": "Organic Search"}],
-                    "metricValues": [{"value": "95"}],
-                },
-                {
-                    "dimensionValues": [{"value": "Direct"}],
-                    "metricValues": [{"value": "60"}],
-                },
-            ]
-        },
-    ]
+    response = {
+        "reports": [
+            {
+                "rows": [
+                    {
+                        "metricValues": [
+                            {"value": value}
+                            for value in ("120", "35", "180", "410")
+                        ]
+                    }
+                ]
+            },
+            {
+                "rows": [
+                    {
+                        "dimensionValues": [{"value": "Organic Search"}],
+                        "metricValues": [{"value": "95"}],
+                    },
+                    {
+                        "dimensionValues": [{"value": "Direct"}],
+                        "metricValues": [{"value": "60"}],
+                    },
+                ]
+            },
+            {
+                "rows": [
+                    {
+                        "dimensionValues": [
+                            {"value": "Referral"},
+                            {"value": "example.com / referral"},
+                        ],
+                        "metricValues": [{"value": "24"}],
+                    }
+                ]
+            },
+            {
+                "rows": [
+                    {
+                        "dimensionValues": [
+                            {"value": "India"},
+                            {"value": "Karnataka"},
+                            {"value": "Bengaluru"},
+                        ],
+                        "metricValues": [{"value": "38"}],
+                    }
+                ]
+            },
+        ]
+    }
     requests = []
 
     class FakeHttp:
         def request(self, uri, method, body, headers):
             requests.append((uri, method, json.loads(body), headers))
-            return SimpleNamespace(status=200), json.dumps(responses.pop(0)).encode()
+            return SimpleNamespace(status=200), json.dumps(response).encode()
 
     monkeypatch.setattr(google.auth, "default", lambda **_kwargs: (object(), None))
     monkeypatch.setattr(service, "_authorized_http", lambda _credentials: FakeHttp())
@@ -64,25 +89,54 @@ def test_report_maps_ga_metrics_and_channel_groups(monkeypatch) -> None:
         {"name": "Organic Search", "sessions": 95},
         {"name": "Direct", "sessions": 60},
     ]
-    assert requests[0][0].endswith("properties/123456789:runReport")
-    assert requests[0][2]["dateRanges"] == [
+    assert report["referralSources"] == [
+        {"sourceMedium": "example.com / referral", "sessions": 24}
+    ]
+    assert report["cities"] == [
+        {
+            "country": "India",
+            "region": "Karnataka",
+            "city": "Bengaluru",
+            "sessions": 38,
+        }
+    ]
+    assert requests[0][0].endswith("properties/123456789:batchRunReports")
+    report_requests = requests[0][2]["requests"]
+    assert report_requests[0]["dateRanges"] == [
         {"startDate": "6daysAgo", "endDate": "today"}
     ]
-    assert requests[1][2]["dimensions"] == [
+    assert report_requests[1]["dimensions"] == [
         {"name": "sessionDefaultChannelGroup"}
     ]
+    assert report_requests[2]["dimensions"] == [
+        {"name": "sessionDefaultChannelGroup"},
+        {"name": "sessionSourceMedium"},
+    ]
+    assert report_requests[2]["dimensionFilter"]["filter"]["stringFilter"] == {
+        "matchType": "EXACT",
+        "value": "Referral",
+    }
+    assert report_requests[2]["limit"] == str(service.MAX_REFERRAL_SOURCES)
+    assert report_requests[3]["dimensions"] == [
+        {"name": "country"},
+        {"name": "region"},
+        {"name": "city"},
+    ]
+    assert report_requests[3]["limit"] == str(service.MAX_CITIES)
 
 
 def test_report_uses_service_account_json_when_configured(monkeypatch) -> None:
-    responses = [
-        {"rows": [{"metricValues": [{"value": "1"}] * 4}]},
-        {"rows": []},
-    ]
-
     class FakeHttp:
         def request(self, *_args, **_kwargs):
             return SimpleNamespace(status=200), json.dumps(
-                responses.pop(0)
+                {
+                    "reports": [
+                        {"rows": [{"metricValues": [{"value": "1"}] * 4}]},
+                        {"rows": []},
+                        {"rows": []},
+                        {"rows": []},
+                    ]
+                }
             ).encode()
 
     credentials = object()
