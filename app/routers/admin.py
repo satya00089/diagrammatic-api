@@ -37,8 +37,28 @@ def require_super_admin(
     return user
 
 
-def _feedback_item(item: Dict[str, Any]) -> AdminFeedbackItem:
-    return AdminFeedbackItem.model_validate(item)
+def _feedback_item(
+    item: Dict[str, Any], user_cache: Dict[str, Any] | None = None
+) -> AdminFeedbackItem:
+    """Add submitter identity only to this super-admin response."""
+    response_item = dict(item)
+    user_id = item.get("userId")
+    if user_id:
+        cache = user_cache if user_cache is not None else {}
+        if user_id not in cache:
+            try:
+                cache[user_id] = dynamodb_service.get_user_by_id(user_id)
+            except Exception:
+                # Identity is helpful but must not make feedback triage unavailable.
+                cache[user_id] = None
+        author = cache[user_id]
+        if author:
+            response_item.update(
+                authorName=author.name,
+                authorEmail=author.email,
+                authorPicture=author.picture,
+            )
+    return AdminFeedbackItem.model_validate(response_item)
 
 
 @router.get("/admin/overview", response_model=AdminOverviewResponse)
@@ -50,6 +70,7 @@ async def get_admin_overview(
     from_date = to_date - timedelta(days=days - 1)
     feedback = dynamodb_service.list_feedback(limit=250)
     feedback_summary = dynamodb_service.summarize_feedback(feedback)
+    user_cache: Dict[str, Any] = {}
     analytics = s3_analytics_aggregator.summarize_date_range(
         from_date.isoformat(), to_date.isoformat()
     )
@@ -58,7 +79,7 @@ async def get_admin_overview(
         toDate=to_date.isoformat(),
         analytics=analytics,
         feedback=feedback_summary,
-        recentFeedback=[_feedback_item(item) for item in feedback[:12]],
+        recentFeedback=[_feedback_item(item, user_cache) for item in feedback[:12]],
     )
 
 

@@ -20,6 +20,9 @@ class AdminFeedbackItem(BaseModel):
     route: Optional[str] = None
     appVersion: Optional[str] = None
     userId: Optional[str] = None
+    authorName: Optional[str] = None
+    authorEmail: Optional[str] = None
+    authorPicture: Optional[str] = None
     context: Dict[str, Any] = Field(default_factory=dict)
 
 
